@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <sys/types.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "kfc.h"
 #include "ucontext.h"
@@ -63,6 +64,7 @@ kfc_teardown(void)
  *
  * @return 0 if successful, nonzero on failure
  */
+// XXX Reference: https://www.ibm.com/docs/en/zos/2.2.0?topic=functions-makecontext-modify-user-context
 int
 kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		caddr_t stack_base, size_t stack_size)
@@ -70,41 +72,39 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 	assert(inited);
 
   // create new context
-  ucontext_t *new_context = calloc(1, sizeof(*new_context));
-  *ptid = 0;
+  ucontext_t new_context;
+  getcontext(&new_context); // XXX why?
+  *ptid = 0; // XXX change later
 
   // allocate stack for new context
-  new_context->uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
-  new_context->uc_stack.ss_sp = stack_base ? stack_base : malloc(new_context->uc_stack.ss_size);
-  VALGRIND_STACK_REGISTER(new_context->uc_stack.ss_sp, new_context->uc_stack.ss_sp + new_context->uc_stack.ss_size);
-
-  DPRINTF("stack size: asked for %d, got %d\n", (int) stack_size, (int) new_context->uc_stack.ss_size);
-  DPRINTF("stack base: asked for %p, got %p\n", stack_base, &new_context->uc_stack.ss_sp);
+  new_context.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
+  new_context.uc_stack.ss_sp = stack_base ? stack_base : malloc(new_context.uc_stack.ss_size);
+  new_context.uc_stack.ss_flags = 0;
+  VALGRIND_STACK_REGISTER(new_context.uc_stack.ss_sp, new_context.uc_stack.ss_sp + new_context.uc_stack.ss_size);
+  DPRINTF("stack size: asked for %d, got %d\n", (int) stack_size, (int) new_context.uc_stack.ss_size);
+  DPRINTF("stack base: asked for %p, got %p\n", stack_base, &new_context.uc_stack.ss_sp);
 
   // assign calling_context as successor context
-  /*ucontext_t *calling_context = malloc(sizeof(*calling_context));
-  if (getcontext(calling_context)) {
-    perror("kfc_create (getcontext)");
+  new_context.uc_link = NULL;
+  
+  // makecontext
+  errno = 0;
+  makecontext(&new_context, (void (*)(void)) start_func, 1, arg);
+  if (errno != 0) {
+    perror("kfc_create (makecontext)");
     return -1;
   }
-  new_context->uc_link = calling_context;*/
-  new_context->uc_link = NULL;
-
-  // makecontext
-  //makecontext(new_context, (void (*)(void)) start_func, 1, arg);
-  makecontext(new_context, (void (*)(void)) start_func, 0);
 
   // swap context
-  if (setcontext(new_context)) {
+  if (setcontext(&new_context)) {
     perror("kfc_create (setcontext)");
     return -1;
   }
 
   // clean up (move to kfc_exit?)
-  /*free(new_context->uc_stack.ss_sp);
-  free(new_context);*/
+  //free(new_context.uc_stack.ss_sp);
   //free(calling_context);
-	return 0;
+  return 0;
 }
 
 /**
@@ -117,6 +117,10 @@ void
 kfc_exit(void *ret)
 {
 	assert(inited);
+  DPRINTF("kfc_exit called\n");
+  ucontext_t ctx;
+  getcontext(&ctx);
+  free(ctx.uc_stack.ss_sp);
 }
 
 /**
