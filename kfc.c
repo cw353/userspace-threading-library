@@ -1,7 +1,10 @@
 #include <assert.h>
 #include <sys/types.h>
+#include <stdlib.h>
 
 #include "kfc.h"
+#include "ucontext.h"
+#include "valgrind.h"
 
 static int inited = 0;
 
@@ -65,7 +68,26 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		caddr_t stack_base, size_t stack_size)
 {
 	assert(inited);
+  ucontext_t *calling_context = malloc(sizeof(*calling_context));
+  if (getcontext(calling_context)) {
+    perror("kfc_create");
+  }
 
+  // create new context
+  ucontext_t *new_context = calloc(1, sizeof(*new_context));
+
+  // allocate stack for new context
+  new_context->uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
+  new_context->uc_stack.ss_sp = stack_base ? stack_base : malloc(new_context->uc_stack.ss_size);
+  VALGRIND_STACK_REGISTER(new_context->uc_stack.ss_sp, new_context->uc_stack.ss_sp + new_context->uc_stack.ss_size);
+
+  // assign calling_context as successor context
+  new_context->uc_link = calling_context;
+
+  // clean up (move to kfc_exit?)
+  free(new_context->uc_stack.ss_sp);
+  free(new_context);
+  free(calling_context);
 	return 0;
 }
 

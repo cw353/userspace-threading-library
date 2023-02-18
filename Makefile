@@ -1,7 +1,7 @@
 LDFLAGS = -lrt -pthread
 CFLAGS = -std=gnu99 -Wall -ggdb -Wno-unused-value
 # Turn this on, make clean, and make for strict checking
-#CFLAGS += -Werror
+CFLAGS += -Werror
 
 # "Lenient" tests run with Valgrind suppressions to ignore memory that will be
 # freed by functions not yet implemented.
