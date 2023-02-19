@@ -87,15 +87,12 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   new_ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(new_ctx.uc_stack.ss_size);
   new_ctx.uc_stack.ss_flags = 0;
   VALGRIND_STACK_REGISTER(new_ctx.uc_stack.ss_sp, new_ctx.uc_stack.ss_sp + new_ctx.uc_stack.ss_size);
-  //DPRINTF("stack size: asked for %d, got %d\n", (int) stack_size, (int) new_ctx.uc_stack.ss_size);
-  //DPRINTF("stack base: asked for %p, got %p\n", stack_base, &new_ctx.uc_stack.ss_sp);
 
   // assign calling_ctx as successor context
   new_ctx.uc_link = NULL;
   
   // makecontext
   errno = 0;
-  //makecontext(&new_ctx, (void (*)(void)) start_func, 1, arg);
   makecontext(&new_ctx, (void (*)(void)) swap_helper, 3, start_func, arg, &calling_ctx);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
@@ -104,14 +101,10 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 
   // swap context
   if (swapcontext(&calling_ctx, &new_ctx)) {
-  //if (setcontext(&new_ctx)) {
     perror("kfc_create (setcontext)");
     return -1;
   }
 
-  // clean up (move to kfc_exit?)
-  //free(new_ctx.uc_stack.ss_sp);
-  //free(calling_ctx);
   return 0;
 }
 
@@ -125,10 +118,6 @@ void
 kfc_exit(void *ret)
 {
 	assert(inited);
-  DPRINTF("kfc_exit called\n");
-  ucontext_t ctx;
-  getcontext(&ctx);
-  free(ctx.uc_stack.ss_sp);
 }
 
 /**
