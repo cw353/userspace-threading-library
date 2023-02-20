@@ -9,7 +9,9 @@
 
 static int inited = 0;
 
-static tid_t next_tid = KFC_TID_MAIN; // XXX main+1???
+static tid_t next_tid = KFC_TID_MAIN + 1; // XXX main+1???
+
+static tid_t current_tid = KFC_TID_MAIN; // main thread is first
 
 static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 
@@ -65,9 +67,11 @@ kfc_teardown(void)
 	inited = 0;
 }
 
-void swap_helper(void *(*start_func)(void *), void *arg, ucontext_t *calling_ctx)
+void swap_helper(void *(*start_func)(void *), void *arg, ucontext_t *calling_ctx, tid_t calling_tid)
 {
+  DPRINTF("in swap_helper, current_tid = %d and calling_tid = %d\n", current_tid, calling_tid);
   start_func(arg);
+  current_tid = calling_tid;
   setcontext(calling_ctx);
 }
 
@@ -120,13 +124,16 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   // makecontext
   errno = 0;
   ucontext_t calling_ctx;
-  makecontext(&thread_info[tid]->ctx, (void (*)(void)) swap_helper, 3, start_func, arg, &calling_ctx);
+  tid_t calling_tid = current_tid;
+  makecontext(&thread_info[tid]->ctx, (void (*)(void)) swap_helper, 4, start_func, arg, &calling_ctx, calling_tid);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
     return -1;
   }
 
   // swap context
+  DPRINTF("in create, current_tid = %d, calling_tid = %d, next_tid = %d\n", current_tid, calling_tid, tid);
+  current_tid = tid;
   if (swapcontext(&calling_ctx, &thread_info[tid]->ctx)) {
     perror("kfc_create (setcontext)");
     return -1;
@@ -178,7 +185,7 @@ kfc_self(void)
 {
 	assert(inited);
 
-	return 0;
+	return current_tid;
 }
 
 /**
