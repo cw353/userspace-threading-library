@@ -11,7 +11,7 @@ static int inited = 0;
 
 static tid_t next_tid = KFC_TID_MAIN + 1;
 
-static kfc_ctx_t **thread_info;
+static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 
 /**
  * Initializes the kfc library.  Programs are required to call this function
@@ -28,11 +28,6 @@ kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
   
-  if (!(thread_info = malloc((KFC_MAX_THREADS - 1) * sizeof(kfc_ctx_t *)))) {
-    perror("kfc_init (malloc)");
-    return -1;
-  }
-
 	inited = 1;
 	return 0;
 }
@@ -52,12 +47,11 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
-  free(thread_info); // XXX only frees the array, not its contents
 
 	inited = 0;
 }
 
-void swap_helper(void *(*start_func)(void *), void *arg, struct ucontext *calling_ctx)
+void swap_helper(void *(*start_func)(void *), void *arg, ucontext_t *calling_ctx)
 {
   start_func(arg);
   setcontext(calling_ctx);
@@ -87,15 +81,16 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 {
 	assert(inited);
 
-  // create new context
+  // create new context (return early with error if KFC_MAX_THREADS has been reached)
+  // XXX synchronize access to next_tid later
+  if (next_tid == KFC_MAX_THREADS) {
+    perror("kfc_create (KFC_MAX_THREADS reached)");
+    return -1;
+  }
   tid_t tid = next_tid++; // XXX synchronize later
   *ptid = tid;
-
   thread_info[tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[tid]->tid = tid;
-  //thread_info[tid]->ctx.
-
-  ucontext_t calling_ctx;
   getcontext(&thread_info[tid]->ctx); // XXX why?
 
   // allocate stack for new context
@@ -104,11 +99,13 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   thread_info[tid]->ctx.uc_stack.ss_flags = 0;
   VALGRIND_STACK_REGISTER(thread_info[tid]->ctx.uc_stack.ss_sp, thread_info[tid]->ctx.uc_stack.ss_sp + thread_info[tid]->ctx.uc_stack.ss_size);
 
-  // assign calling_ctx as successor context
+  // set successor context to null
   thread_info[tid]->ctx.uc_link = NULL;
+
   
   // makecontext
   errno = 0;
+  ucontext_t calling_ctx;
   makecontext(&thread_info[tid]->ctx, (void (*)(void)) swap_helper, 3, start_func, arg, &calling_ctx);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
