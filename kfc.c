@@ -9,6 +9,10 @@
 
 static int inited = 0;
 
+static tid_t next_tid = KFC_TID_MAIN + 1;
+
+static kfc_ctx_t **thread_info;
+
 /**
  * Initializes the kfc library.  Programs are required to call this function
  * before they may use anything else in the library's public interface.
@@ -23,6 +27,11 @@ int
 kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
+  
+  if (!(thread_info = malloc((KFC_MAX_THREADS - 1) * sizeof(kfc_ctx_t *)))) {
+    perror("kfc_init (malloc)");
+    return -1;
+  }
 
 	inited = 1;
 	return 0;
@@ -43,6 +52,7 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
+  free(thread_info); // XXX only frees the array, not its contents
 
 	inited = 0;
 }
@@ -78,29 +88,35 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 	assert(inited);
 
   // create new context
-  ucontext_t calling_ctx, new_ctx;
-  getcontext(&new_ctx); // XXX why?
-  *ptid = 0; // XXX change later
+  tid_t tid = next_tid++; // XXX synchronize later
+  *ptid = tid;
+
+  thread_info[tid] = malloc(sizeof(kfc_ctx_t));
+  thread_info[tid]->tid = tid;
+  //thread_info[tid]->ctx.
+
+  ucontext_t calling_ctx;
+  getcontext(&thread_info[tid]->ctx); // XXX why?
 
   // allocate stack for new context
-  new_ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
-  new_ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(new_ctx.uc_stack.ss_size);
-  new_ctx.uc_stack.ss_flags = 0;
-  VALGRIND_STACK_REGISTER(new_ctx.uc_stack.ss_sp, new_ctx.uc_stack.ss_sp + new_ctx.uc_stack.ss_size);
+  thread_info[tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
+  thread_info[tid]->ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(thread_info[tid]->ctx.uc_stack.ss_size); // XXX need to free later
+  thread_info[tid]->ctx.uc_stack.ss_flags = 0;
+  VALGRIND_STACK_REGISTER(thread_info[tid]->ctx.uc_stack.ss_sp, thread_info[tid]->ctx.uc_stack.ss_sp + thread_info[tid]->ctx.uc_stack.ss_size);
 
   // assign calling_ctx as successor context
-  new_ctx.uc_link = NULL;
+  thread_info[tid]->ctx.uc_link = NULL;
   
   // makecontext
   errno = 0;
-  makecontext(&new_ctx, (void (*)(void)) swap_helper, 3, start_func, arg, &calling_ctx);
+  makecontext(&thread_info[tid]->ctx, (void (*)(void)) swap_helper, 3, start_func, arg, &calling_ctx);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
     return -1;
   }
 
   // swap context
-  if (swapcontext(&calling_ctx, &new_ctx)) {
+  if (swapcontext(&calling_ctx, &thread_info[tid]->ctx)) {
     perror("kfc_create (setcontext)");
     return -1;
   }

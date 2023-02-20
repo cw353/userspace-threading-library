@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <sys/types.h>
 
+#include "ucontext.h"
+
 #define DPRINTF(...) do { fprintf(stderr, __VA_ARGS__); } while (0)
 
 #define KFC_MAX_THREADS 1024
@@ -20,6 +22,11 @@ typedef unsigned int tid_t;
 typedef struct {
 	// Put fields for semaphore here
 } kfc_sem_t;
+
+typedef struct {
+  tid_t tid;
+  ucontext_t ctx;
+} kfc_ctx_t;
 
 /**************************
  * Public interface
