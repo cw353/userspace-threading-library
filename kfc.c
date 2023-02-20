@@ -9,7 +9,7 @@
 
 static int inited = 0;
 
-static tid_t next_tid = KFC_TID_MAIN + 1; // XXX main+1???
+static tid_t next_tid = KFC_TID_MAIN;
 
 static tid_t current_tid = KFC_TID_MAIN; // main thread is first
 
@@ -30,6 +30,11 @@ kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
   
+  // initialize kfc_ctx for main thread
+  tid_t tid = next_tid++; // XXX synchronize later
+  thread_info[tid] = malloc(sizeof(kfc_ctx_t));
+  thread_info[tid]->tid = tid;
+
 	inited = 1;
 	return 0;
 }
@@ -67,12 +72,12 @@ kfc_teardown(void)
 	inited = 0;
 }
 
-void swap_helper(void *(*start_func)(void *), void *arg, ucontext_t *calling_ctx, tid_t calling_tid)
+void swap_helper(void *(*start_func)(void *), void *arg, tid_t calling_tid)
 {
-  DPRINTF("in swap_helper, current_tid = %d and calling_tid = %d\n", current_tid, calling_tid);
+  //DPRINTF("in swap_helper, current_tid = %d and calling_tid = %d\n", current_tid, calling_tid);
   start_func(arg);
   current_tid = calling_tid;
-  setcontext(calling_ctx);
+  setcontext(&thread_info[calling_tid]->ctx);
 }
 
 /**
@@ -123,18 +128,17 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   
   // makecontext
   errno = 0;
-  ucontext_t calling_ctx;
   tid_t calling_tid = current_tid;
-  makecontext(&thread_info[tid]->ctx, (void (*)(void)) swap_helper, 4, start_func, arg, &calling_ctx, calling_tid);
+  makecontext(&thread_info[tid]->ctx, (void (*)(void)) swap_helper, 3, start_func, arg, calling_tid);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
     return -1;
   }
 
   // swap context
-  DPRINTF("in create, current_tid = %d, calling_tid = %d, next_tid = %d\n", current_tid, calling_tid, tid);
+  //DPRINTF("in create, current_tid = %d, calling_tid = %d, next_tid = %d\n", current_tid, calling_tid, tid);
   current_tid = tid;
-  if (swapcontext(&calling_ctx, &thread_info[tid]->ctx)) {
+  if (swapcontext(&thread_info[calling_tid]->ctx, &thread_info[tid]->ctx)) {
     perror("kfc_create (setcontext)");
     return -1;
   }
