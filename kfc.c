@@ -11,9 +11,23 @@ static int inited = 0;
 
 static tid_t next_tid = KFC_TID_MAIN;
 
-static tid_t current_tid = KFC_TID_MAIN; // main thread is first
+static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
 
 static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
+
+/* Swap context while updating current_tid */
+int kfc_swapcontext(tid_t old_tid, tid_t new_tid)
+{
+  current_tid = new_tid;
+  return swapcontext(&thread_info[old_tid]->ctx, &thread_info[new_tid]->ctx);
+}
+
+/* Set context while updating current tid */
+int kfc_setcontext(tid_t new_tid)
+{
+  current_tid = new_tid;
+  return setcontext(&thread_info[new_tid]->ctx);
+}
 
 /**
  * Initializes the kfc library.  Programs are required to call this function
@@ -72,12 +86,11 @@ kfc_teardown(void)
 	inited = 0;
 }
 
+/* Run the provided thread start_func and then return to the calling context */
 void swap_helper(void *(*start_func)(void *), void *arg, tid_t calling_tid)
 {
-  //DPRINTF("in swap_helper, current_tid = %d and calling_tid = %d\n", current_tid, calling_tid);
   start_func(arg);
-  current_tid = calling_tid;
-  setcontext(&thread_info[calling_tid]->ctx);
+  kfc_setcontext(calling_tid);
 }
 
 /**
@@ -110,37 +123,34 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
     perror("kfc_create (KFC_MAX_THREADS reached)");
     return -1;
   }
-  tid_t tid = next_tid++; // XXX synchronize later
-  *ptid = tid;
-  thread_info[tid] = malloc(sizeof(kfc_ctx_t));
-  thread_info[tid]->tid = tid;
-  getcontext(&thread_info[tid]->ctx); // XXX why???
+  tid_t new_tid = next_tid++; // XXX synchronize later
+  *ptid = new_tid;
+  thread_info[new_tid] = malloc(sizeof(kfc_ctx_t));
+  thread_info[new_tid]->tid = new_tid;
+  getcontext(&thread_info[new_tid]->ctx); // XXX why???
 
   // allocate stack for new context
-  thread_info[tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
-  thread_info[tid]->ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(thread_info[tid]->ctx.uc_stack.ss_size); // XXX need to free later
-  thread_info[tid]->ctx.uc_stack.ss_flags = 0;
-  VALGRIND_STACK_REGISTER(thread_info[tid]->ctx.uc_stack.ss_sp, thread_info[tid]->ctx.uc_stack.ss_sp + thread_info[tid]->ctx.uc_stack.ss_size);
+  thread_info[new_tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
+  thread_info[new_tid]->ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(thread_info[new_tid]->ctx.uc_stack.ss_size); // XXX need to free later
+  thread_info[new_tid]->ctx.uc_stack.ss_flags = 0;
+  VALGRIND_STACK_REGISTER(thread_info[new_tid]->ctx.uc_stack.ss_sp, thread_info[new_tid]->ctx.uc_stack.ss_sp + thread_info[new_tid]->ctx.uc_stack.ss_size);
 
   // set successor context to null
-  thread_info[tid]->ctx.uc_link = NULL;
+  thread_info[new_tid]->ctx.uc_link = NULL;
 
   
-  // makecontext
+  // makecontext (note that current_tid is the tid of the calling context)
   errno = 0;
-  tid_t calling_tid = current_tid;
-  makecontext(&thread_info[tid]->ctx, (void (*)(void)) swap_helper, 3, start_func, arg, calling_tid);
+  makecontext(&thread_info[new_tid]->ctx, (void (*)(void)) swap_helper, 3, start_func, arg, current_tid);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
-    return -1;
+    abort();
   }
 
-  // swap context
-  //DPRINTF("in create, current_tid = %d, calling_tid = %d, next_tid = %d\n", current_tid, calling_tid, tid);
-  current_tid = tid;
-  if (swapcontext(&thread_info[calling_tid]->ctx, &thread_info[tid]->ctx)) {
+  // swapcontext
+  if (kfc_swapcontext(current_tid, new_tid)) {
     perror("kfc_create (setcontext)");
-    return -1;
+    abort();
   }
 
   return 0;
