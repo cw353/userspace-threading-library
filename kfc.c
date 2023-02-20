@@ -9,7 +9,7 @@
 
 static int inited = 0;
 
-static tid_t next_tid = KFC_TID_MAIN + 1;
+static tid_t next_tid = KFC_TID_MAIN; // XXX main+1???
 
 static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 
@@ -32,6 +32,15 @@ kfc_init(int kthreads, int quantum_us)
 	return 0;
 }
 
+void
+destroy_thread_info(tid_t tid)
+{
+  if (thread_info[tid]) {
+    //free(thread_info[tid]->ctx.uc_stack.ss_sp); // XXX how to free thread stack???
+    free(thread_info[tid]);
+  }
+}
+
 /**
  * Cleans up any resources which were allocated by kfc_init.  You may assume
  * that this function is called only from the main thread, that any other
@@ -47,6 +56,11 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
+
+  // XXX revise later so only main thread is destroyed
+  for (int i = 0; i < KFC_MAX_THREADS; i++) {
+    destroy_thread_info(i);
+  }
 
 	inited = 0;
 }
@@ -91,7 +105,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   *ptid = tid;
   thread_info[tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[tid]->tid = tid;
-  getcontext(&thread_info[tid]->ctx); // XXX why?
+  getcontext(&thread_info[tid]->ctx); // XXX why???
 
   // allocate stack for new context
   thread_info[tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
