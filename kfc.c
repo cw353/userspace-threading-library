@@ -4,6 +4,7 @@
 #include <errno.h>
 
 #include "kfc.h"
+#include "queue.h"
 #include "ucontext.h"
 #include "valgrind.h"
 
@@ -15,10 +16,22 @@ static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
 
 static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 
-/* Swap context while updating current_tid */
+static queue_t queue;
+
+/**
+ * Swap context while updating state
+ * Postcondition: current_tid has been set to new_tid,
+ * and old_tid has been enqueued at the tail of queue
+ */
 int kfc_swapcontext(tid_t old_tid, tid_t new_tid)
 {
   current_tid = new_tid;
+  DPRINTF("in kfc_swapcontext, thread_info[old_tid]->tid = %d\n", thread_info[old_tid]->tid);
+  DPRINTF("enqueuing old_tid %d\n", old_tid);
+  if (queue_enqueue(&queue, &old_tid)) {
+    perror("kfc_swapcontext (queue_enqueue)");
+    abort();
+  }
   return swapcontext(&thread_info[old_tid]->ctx, &thread_info[new_tid]->ctx);
 }
 
@@ -43,6 +56,12 @@ int
 kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
+
+  // initialize queue
+  if (queue_init(&queue)) {
+    perror ("kfc_init (queue_init)");
+    abort();
+  }
   
   // initialize kfc_ctx for main thread
   tid_t tid = next_tid++; // XXX synchronize later
@@ -78,6 +97,8 @@ kfc_teardown(void)
 {
 	assert(inited);
 
+  queue_destroy(&queue);
+
   // XXX revise later so only main thread is destroyed
   for (int i = 0; i < KFC_MAX_THREADS; i++) {
     destroy_thread_info(i);
@@ -90,7 +111,14 @@ kfc_teardown(void)
 void swap_helper(void *(*start_func)(void *), void *arg, tid_t calling_tid)
 {
   start_func(arg);
-  kfc_setcontext(calling_tid);
+  tid_t *tid = queue_dequeue(&queue); // XXX 0 == NULL so can't store tid???
+  DPRINTF("dequeuing tid %d\n", *tid);
+  /*if (!*tid) { // XXX how to error check?
+    perror("swap_helper - queue is empty");
+    abort();
+  }*/
+  DPRINTF("calling_tid = %d, ctx->tid = %d\n", calling_tid, *tid);
+  kfc_setcontext(*tid);
 }
 
 /**
