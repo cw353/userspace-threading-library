@@ -26,9 +26,7 @@ static queue_t queue;
 int kfc_swapcontext(tid_t old_tid, tid_t new_tid)
 {
   current_tid = new_tid;
-  DPRINTF("in kfc_swapcontext, thread_info[old_tid]->tid = %d\n", thread_info[old_tid]->tid);
-  DPRINTF("enqueuing old_tid %d\n", old_tid);
-  if (queue_enqueue(&queue, &old_tid)) {
+  if (queue_enqueue(&queue, thread_info[old_tid])) {
     perror("kfc_swapcontext (queue_enqueue)");
     abort();
   }
@@ -111,14 +109,13 @@ kfc_teardown(void)
 void swap_helper(void *(*start_func)(void *), void *arg, tid_t calling_tid)
 {
   start_func(arg);
-  tid_t *tid = queue_dequeue(&queue); // XXX 0 == NULL so can't store tid???
-  DPRINTF("dequeuing tid %d\n", *tid);
-  /*if (!*tid) { // XXX how to error check?
+  assert(queue_size(&queue) > 0);
+  kfc_ctx_t *ctx;
+  if (!(ctx = queue_dequeue(&queue))) {
     perror("swap_helper - queue is empty");
     abort();
-  }*/
-  DPRINTF("calling_tid = %d, ctx->tid = %d\n", calling_tid, *tid);
-  kfc_setcontext(*tid);
+  }
+  kfc_setcontext(ctx->tid);
 }
 
 /**
