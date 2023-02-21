@@ -116,7 +116,7 @@ kfc_teardown(void)
  * the context of the next thread in the queue as the new context.
  * Precondition: the queue is not empty.
  */
-void swap_helper(void *(*start_func)(void *), void *arg, tid_t calling_tid)
+void swap_helper(void *(*start_func)(void *), void *arg)
 {
   start_func(arg);
   assert(queue_size(&queue) > 0);
@@ -176,7 +176,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   
   // makecontext (note that current_tid is the tid of the calling context)
   errno = 0;
-  makecontext(&thread_info[new_tid]->ctx, (void (*)(void)) swap_helper, 3, start_func, arg, current_tid);
+  makecontext(&thread_info[new_tid]->ctx, (void (*)(void)) swap_helper, 2, start_func, arg);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
     abort();
