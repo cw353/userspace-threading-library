@@ -19,9 +19,11 @@ static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 static queue_t queue;
 
 /**
- * Swap context while updating state
- * Postcondition: current_tid has been set to new_tid,
- * and old_tid has been enqueued at the tail of queue
+ * Swap context while updating state.
+ * Postcondition: current_tid has been set to new_tid, old_tid
+ * has been enqueued at the tail of queue, the thread context
+ * corresponding to old_tid has been saved, and the current
+ * context is the thread context corresponding to new_tid.
  */
 int kfc_swapcontext(tid_t old_tid, tid_t new_tid)
 {
@@ -33,7 +35,11 @@ int kfc_swapcontext(tid_t old_tid, tid_t new_tid)
   return swapcontext(&thread_info[old_tid]->ctx, &thread_info[new_tid]->ctx);
 }
 
-/* Set context while updating current tid */
+/**
+ * Set context while updating state.
+ * Postcondition: current_tid has been set to new_tid, and the
+ * current context is the thread context corresponding to new_tid.
+ */
 int kfc_setcontext(tid_t new_tid)
 {
   current_tid = new_tid;
@@ -105,7 +111,11 @@ kfc_teardown(void)
 	inited = 0;
 }
 
-/* Run the provided thread start_func and then return to the calling context */
+/**
+ * Run the provided thread main function start_func and then set
+ * the context of the next thread in the queue as the new context.
+ * Precondition: the queue is not empty.
+ */
 void swap_helper(void *(*start_func)(void *), void *arg, tid_t calling_tid)
 {
   start_func(arg);
@@ -174,7 +184,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 
   // swapcontext
   if (kfc_swapcontext(current_tid, new_tid)) {
-    perror("kfc_create (setcontext)");
+    perror("kfc_create (swapcontext)");
     abort();
   }
 
@@ -237,6 +247,22 @@ void
 kfc_yield(void)
 {
 	assert(inited);
+  
+  // return to caller if queue is empty
+  if (queue_size(&queue) == 0) return;
+
+  // otherwise, get the context of the next thread to schedule
+  kfc_ctx_t *ctx;
+  if (!(ctx = queue_dequeue(&queue))) {
+    perror("kfc_yield - queue is empty");
+    abort();
+  }
+  
+  // switch to that thread context while saving the previous one
+  if (kfc_swapcontext(current_tid, ctx->tid)) {
+    perror("kfc_yield (swapcontext)");
+    abort();
+  }
 }
 
 /**
