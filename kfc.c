@@ -155,8 +155,9 @@ kfc_teardown(void)
  */
 void trampoline(void *(*start_func)(void *), void *arg)
 {
-  void *ret = start_func(arg);
-  kfc_exit(ret);
+  start_func(arg);
+  /*void *ret = start_func(arg);
+  kfc_exit(ret);*/
 }
 
 /**
@@ -231,6 +232,13 @@ void
 kfc_exit(void *ret)
 {
 	assert(inited);
+
+  // TODO: free calling thread
+  // call scheduler
+  if (setcontext(&sched_ctx)) {
+    perror("kfc_exit (setcontext)");
+    abort();
+  }
 }
 
 /**
