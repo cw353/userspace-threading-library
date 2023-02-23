@@ -10,6 +10,8 @@
 
 static int inited = 0;
 
+// XXX synchronize access later
+
 static tid_t next_tid = KFC_TID_MAIN;
 
 static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
@@ -22,7 +24,21 @@ static queue_t queue;
 
 void schedule()
 {
-  DPRINTF("schedule called\n");
+  // get next thread from queue
+  kfc_ctx_t *next_ctx;
+  if (!(next_ctx = queue_dequeue(&queue))) {
+    perror("schedule - queue is empty");
+    abort();
+  }
+
+  // update current_tid
+  current_tid = next_ctx->tid;
+
+  // schedule next thread
+  if (setcontext(&next_ctx->ctx)) {
+    perror("schedule (setcontext)");
+    abort();
+  }
 }
 
 /**
@@ -157,6 +173,12 @@ void swap_helper(void *(*start_func)(void *), void *arg)
   kfc_setcontext(ctx->tid);
 }
 
+void trampoline(void *(*start_func)(void *), void *arg)
+{
+  void *ret = start_func(arg);
+  kfc_exit(ret);
+}
+
 /**
  * Creates a new user thread which executes the provided function concurrently.
  * It is left up to the implementation to decide whether the calling thread
@@ -181,13 +203,12 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 {
 	assert(inited);
 
-  // create new context (return early with error if KFC_MAX_THREADS has been reached)
-  // XXX synchronize access to next_tid later
+  // create new context (return early with error if KFC_MAX_THREADS has been reached) (XXX change later to allow tid reuse)
   if (next_tid == KFC_MAX_THREADS) {
     perror("kfc_create (KFC_MAX_THREADS reached)");
     return -1;
   }
-  tid_t new_tid = next_tid++; // XXX synchronize later
+  tid_t new_tid = next_tid++;
   *ptid = new_tid;
   thread_info[new_tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[new_tid]->tid = new_tid;
@@ -198,26 +219,25 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 
   // allocate stack for new context
   thread_info[new_tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
-  thread_info[new_tid]->ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(thread_info[new_tid]->ctx.uc_stack.ss_size); // XXX need to free later
+  thread_info[new_tid]->ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(thread_info[new_tid]->ctx.uc_stack.ss_size);
   thread_info[new_tid]->stack_allocated = stack_base ? 0 : 1;
   thread_info[new_tid]->ctx.uc_stack.ss_flags = 0;
   VALGRIND_STACK_REGISTER(thread_info[new_tid]->ctx.uc_stack.ss_sp, thread_info[new_tid]->ctx.uc_stack.ss_sp + thread_info[new_tid]->ctx.uc_stack.ss_size);
 
-  // set successor context to null
-  thread_info[new_tid]->ctx.uc_link = NULL;
-
+  // set scheduler as successor context
+  thread_info[new_tid]->ctx.uc_link = &sched_ctx;
   
   // makecontext (note that current_tid is the tid of the calling context)
   errno = 0;
-  makecontext(&thread_info[new_tid]->ctx, (void (*)(void)) swap_helper, 2, start_func, arg);
+  makecontext(&thread_info[new_tid]->ctx, (void (*)(void)) trampoline, 2, start_func, arg);
   if (errno != 0) {
     perror("kfc_create (makecontext)");
     abort();
   }
 
-  // swapcontext
-  if (kfc_swapcontext(current_tid, new_tid)) {
-    perror("kfc_create (swapcontext)");
+  // add new context to queue
+  if (queue_enqueue(&queue, thread_info[new_tid])) {
+    perror("kfc_create (queue_enqueue)");
     abort();
   }
 
@@ -281,21 +301,14 @@ kfc_yield(void)
 {
 	assert(inited);
   
-  // return to caller if queue is empty
-  if (queue_size(&queue) == 0) return;
-
-  // otherwise, get the context of the next thread to schedule
-  kfc_ctx_t *ctx;
-  if (!(ctx = queue_dequeue(&queue))) {
-    perror("kfc_yield - queue is empty");
+  // enqueue calling thread
+  if (queue_enqueue(&queue, thread_info[current_tid])) {
+    perror("kfc_swapcontext (queue_enqueue)");
     abort();
   }
   
-  // switch to that thread context while saving the previous one
-  if (kfc_swapcontext(current_tid, ctx->tid)) {
-    perror("kfc_yield (swapcontext)");
-    abort();
-  }
+  // save caller state and swap to scheduler (XXX add error checking later)
+  swapcontext(&thread_info[current_tid]->ctx, &sched_ctx);
 }
 
 /**
