@@ -45,6 +45,28 @@ void schedule()
 }
 
 /**
+ * Allocate the stack for the provided ucontext_t.
+ * @param stack       A pointer to the thread's stack
+ * @param stack_base  Location of the thread's stack if already allocated, or
+ *                    NULL if requesting that the library allocate it
+ *                    dynamically
+ * @param stack_size  Size (in bytes) of the thread's stack, or 0 to use the
+ *                    default thread stack size KFC_DEF_STACK_SIZE
+ * POSTCONDITION: The stack has been allocated and registered with valgrind.
+ */
+void allocate_stack(stack_t *stack, caddr_t stack_base, size_t stack_size)
+{
+  stack->ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
+  stack->ss_sp = stack_base ? stack_base : malloc(stack->ss_size);
+  if (!(stack->ss_sp)) {
+    perror("allocate_stack (malloc)");
+    abort();
+  }
+  stack->ss_flags = 0;
+  VALGRIND_STACK_REGISTER(stack->ss_sp, stack->ss_sp + stack->ss_size);
+}
+
+/**
  * Initializes the kfc library.  Programs are required to call this function
  * before they may use anything else in the library's public interface.
  *
@@ -72,10 +94,7 @@ kfc_init(int kthreads, int quantum_us)
   }
 
   // allocate stack for scheduler context
-  sched_ctx.uc_stack.ss_size = KFC_DEF_STACK_SIZE;
-  sched_ctx.uc_stack.ss_sp = malloc(sched_ctx.uc_stack.ss_size);
-  sched_ctx.uc_stack.ss_flags = 0;
-  VALGRIND_STACK_REGISTER(sched_ctx.uc_stack.ss_sp, sched_ctx.uc_stack.ss_sp + sched_ctx.uc_stack.ss_size);
+  allocate_stack(&sched_ctx.uc_stack, NULL, 0);
 
   // make scheduler context
   errno = 0;
@@ -179,11 +198,8 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   }
 
   // allocate stack for new context
-  thread_info[new_tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
-  thread_info[new_tid]->ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(thread_info[new_tid]->ctx.uc_stack.ss_size);
+  allocate_stack(&thread_info[new_tid]->ctx.uc_stack, stack_base, stack_size);
   thread_info[new_tid]->stack_allocated = stack_base ? 0 : 1;
-  thread_info[new_tid]->ctx.uc_stack.ss_flags = 0;
-  VALGRIND_STACK_REGISTER(thread_info[new_tid]->ctx.uc_stack.ss_sp, thread_info[new_tid]->ctx.uc_stack.ss_sp + thread_info[new_tid]->ctx.uc_stack.ss_size);
 
   // set scheduler as successor context
   thread_info[new_tid]->ctx.uc_link = &sched_ctx;
