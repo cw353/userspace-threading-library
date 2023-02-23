@@ -16,7 +16,14 @@ static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
 
 static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 
+static ucontext_t sched_ctx;
+
 static queue_t queue;
+
+void schedule()
+{
+  DPRINTF("schedule called\n");
+}
 
 /**
  * Swap context while updating state.
@@ -66,6 +73,18 @@ kfc_init(int kthreads, int quantum_us)
     perror ("kfc_init (queue_init)");
     abort();
   }
+
+  // initialize scheduler context
+  getcontext(&sched_ctx);
+
+  // allocate stack for scheduler context
+  sched_ctx.uc_stack.ss_size = KFC_DEF_STACK_SIZE;
+  sched_ctx.uc_stack.ss_sp = malloc(sched_ctx.uc_stack.ss_size);
+  sched_ctx.uc_stack.ss_flags = 0;
+  VALGRIND_STACK_REGISTER(sched_ctx.uc_stack.ss_sp, sched_ctx.uc_stack.ss_sp + sched_ctx.uc_stack.ss_size);
+
+  // make scheduler context
+  makecontext(&sched_ctx, (void (*)(void)) schedule, 0);
   
   // initialize kfc_ctx for main thread
   tid_t tid = next_tid++; // XXX synchronize later
@@ -94,7 +113,7 @@ kfc_teardown(void)
 
   queue_destroy(&queue);
 
-  // XXX revise later so only main thread is destroyed
+  // XXX move cleanup of non-main threads to kfc_join later
   for (int tid = KFC_TID_MAIN+1; tid < KFC_MAX_THREADS; tid++) {
     if (thread_info[tid]) {
       if (thread_info[tid]->stack_allocated) {
@@ -103,6 +122,10 @@ kfc_teardown(void)
       free(thread_info[tid]);
     }
   }
+ 
+  // free scheduler context
+  free(sched_ctx.uc_stack.ss_sp);
+
   // free main thread
   free(thread_info[KFC_TID_MAIN]);
 
