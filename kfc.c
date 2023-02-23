@@ -22,9 +22,12 @@ static ucontext_t sched_ctx;
 
 static queue_t queue;
 
+/**
+ * Schedule the next thread.
+ */
 void schedule()
 {
-  // get next thread from queue
+  // get next thread from queue (fcfs)
   kfc_ctx_t *next_ctx;
   if (!(next_ctx = queue_dequeue(&queue))) {
     perror("schedule - queue is empty");
@@ -39,34 +42,6 @@ void schedule()
     perror("schedule (setcontext)");
     abort();
   }
-}
-
-/**
- * Swap context while updating state.
- * Postcondition: current_tid has been set to new_tid, old_tid
- * has been enqueued at the tail of queue, the thread context
- * corresponding to old_tid has been saved, and the current
- * context is the thread context corresponding to new_tid.
- */
-int kfc_swapcontext(tid_t old_tid, tid_t new_tid)
-{
-  current_tid = new_tid;
-  if (queue_enqueue(&queue, thread_info[old_tid])) {
-    perror("kfc_swapcontext (queue_enqueue)");
-    abort();
-  }
-  return swapcontext(&thread_info[old_tid]->ctx, &thread_info[new_tid]->ctx);
-}
-
-/**
- * Set context while updating state.
- * Postcondition: current_tid has been set to new_tid, and the
- * current context is the thread context corresponding to new_tid.
- */
-int kfc_setcontext(tid_t new_tid)
-{
-  current_tid = new_tid;
-  return setcontext(&thread_info[new_tid]->ctx);
 }
 
 /**
@@ -111,7 +86,7 @@ kfc_init(int kthreads, int quantum_us)
   }
   
   // initialize kfc_ctx for main thread
-  tid_t tid = next_tid++; // XXX synchronize later
+  tid_t tid = next_tid++;
   thread_info[tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[tid]->tid = tid;
 
@@ -157,22 +132,8 @@ kfc_teardown(void)
 }
 
 /**
- * Run the provided thread main function start_func and then set
- * the context of the next thread in the queue as the new context.
- * Precondition: the queue is not empty.
+ * Thread trampoline function.
  */
-void swap_helper(void *(*start_func)(void *), void *arg)
-{
-  start_func(arg);
-  assert(queue_size(&queue) > 0);
-  kfc_ctx_t *ctx;
-  if (!(ctx = queue_dequeue(&queue))) {
-    perror("swap_helper - queue is empty");
-    abort();
-  }
-  kfc_setcontext(ctx->tid);
-}
-
 void trampoline(void *(*start_func)(void *), void *arg)
 {
   void *ret = start_func(arg);
@@ -286,7 +247,6 @@ tid_t
 kfc_self(void)
 {
 	assert(inited);
-
 	return current_tid;
 }
 
@@ -307,8 +267,11 @@ kfc_yield(void)
     abort();
   }
   
-  // save caller state and swap to scheduler (XXX add error checking later)
-  swapcontext(&thread_info[current_tid]->ctx, &sched_ctx);
+  // save caller state and swap to scheduler
+  if (swapcontext(&thread_info[current_tid]->ctx, &sched_ctx)) {
+    perror("kfc_yield (swapcontext)");
+    abort();
+  }
 }
 
 /**
