@@ -25,6 +25,7 @@ typedef struct {
 
 typedef struct {
   tid_t tid;
+  char stack_allocated; // if stack was allocated by kfc
   ucontext_t ctx;
 } kfc_ctx_t;
 

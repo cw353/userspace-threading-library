@@ -76,15 +76,6 @@ kfc_init(int kthreads, int quantum_us)
 	return 0;
 }
 
-void
-destroy_thread_info(tid_t tid)
-{
-  if (thread_info[tid]) {
-    //free(thread_info[tid]->ctx.uc_stack.ss_sp); // XXX how to free thread stack???
-    free(thread_info[tid]);
-  }
-}
-
 /**
  * Cleans up any resources which were allocated by kfc_init.  You may assume
  * that this function is called only from the main thread, that any other
@@ -104,9 +95,16 @@ kfc_teardown(void)
   queue_destroy(&queue);
 
   // XXX revise later so only main thread is destroyed
-  for (int i = 0; i < KFC_MAX_THREADS; i++) {
-    destroy_thread_info(i);
+  for (int tid = KFC_TID_MAIN+1; tid < KFC_MAX_THREADS; tid++) {
+    if (thread_info[tid]) {
+      if (thread_info[tid]->stack_allocated) {
+        free(thread_info[tid]->ctx.uc_stack.ss_sp);
+      }
+      free(thread_info[tid]);
+    }
   }
+  // free main thread
+  free(thread_info[KFC_TID_MAIN]);
 
 	inited = 0;
 }
@@ -167,6 +165,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   // allocate stack for new context
   thread_info[new_tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
   thread_info[new_tid]->ctx.uc_stack.ss_sp = stack_base ? stack_base : malloc(thread_info[new_tid]->ctx.uc_stack.ss_size); // XXX need to free later
+  thread_info[new_tid]->stack_allocated = stack_base ? 0 : 1;
   thread_info[new_tid]->ctx.uc_stack.ss_flags = 0;
   VALGRIND_STACK_REGISTER(thread_info[new_tid]->ctx.uc_stack.ss_sp, thread_info[new_tid]->ctx.uc_stack.ss_sp + thread_info[new_tid]->ctx.uc_stack.ss_size);
 
