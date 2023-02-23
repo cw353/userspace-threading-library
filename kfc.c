@@ -20,17 +20,17 @@ static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 
 static ucontext_t sched_ctx;
 
-static queue_t queue;
+static queue_t ready_queue;
 
 /**
  * Schedule the next thread.
  */
 void schedule()
 {
-  // get next thread from queue (fcfs)
+  // get next thread from ready_queue (fcfs)
   kfc_ctx_t *next_ctx;
-  if (!(next_ctx = queue_dequeue(&queue))) {
-    perror("schedule - queue is empty");
+  if (!(next_ctx = queue_dequeue(&ready_queue))) {
+    perror("schedule - ready_queue is empty");
     abort();
   }
 
@@ -38,6 +38,7 @@ void schedule()
   current_tid = next_ctx->tid;
 
   // schedule next thread
+  next_ctx->state = RUNNING;
   if (setcontext(&next_ctx->ctx)) {
     perror("schedule (setcontext)");
     abort();
@@ -81,8 +82,8 @@ kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
 
-  // initialize queue
-  if (queue_init(&queue)) {
+  // initialize ready_queue
+  if (queue_init(&ready_queue)) {
     perror ("kfc_init (queue_init)");
     abort();
   }
@@ -108,6 +109,7 @@ kfc_init(int kthreads, int quantum_us)
   tid_t tid = next_tid++;
   thread_info[tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[tid]->tid = tid;
+  thread_info[tid]->state = RUNNING;
 
 	inited = 1;
 	return 0;
@@ -129,7 +131,7 @@ kfc_teardown(void)
 {
 	assert(inited);
 
-  queue_destroy(&queue);
+  queue_destroy(&ready_queue);
 
   // XXX move cleanup of non-main threads to kfc_join later
   for (int tid = KFC_TID_MAIN+1; tid < KFC_MAX_THREADS; tid++) {
@@ -155,6 +157,7 @@ kfc_teardown(void)
  */
 void trampoline(void *(*start_func)(void *), void *arg)
 {
+  assert(thread_info[current_tid]->state == RUNNING);
   start_func(arg);
   /*void *ret = start_func(arg);
   kfc_exit(ret);*/
@@ -193,6 +196,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   *ptid = new_tid;
   thread_info[new_tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[new_tid]->tid = new_tid;
+  thread_info[new_tid]->state = READY;
   if (getcontext(&thread_info[new_tid]->ctx)) {
     perror("kfc_create (getcontext)");
     abort();
@@ -213,8 +217,8 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
     abort();
   }
 
-  // add new context to queue
-  if (queue_enqueue(&queue, thread_info[new_tid])) {
+  // add new context to ready_queue
+  if (queue_enqueue(&ready_queue, thread_info[new_tid])) {
     perror("kfc_create (queue_enqueue)");
     abort();
   }
@@ -233,8 +237,11 @@ kfc_exit(void *ret)
 {
 	assert(inited);
 
-  // TODO: free calling thread
-  // call scheduler
+  // update thread state
+  assert(thread_info[current_tid]->state == RUNNING);
+  thread_info[current_tid]->state = FINISHED;
+
+  // ask scheduler to schedule next thread
   if (setcontext(&sched_ctx)) {
     perror("kfc_exit (setcontext)");
     abort();
@@ -286,7 +293,7 @@ kfc_yield(void)
 	assert(inited);
   
   // enqueue calling thread
-  if (queue_enqueue(&queue, thread_info[current_tid])) {
+  if (queue_enqueue(&ready_queue, thread_info[current_tid])) {
     perror("kfc_swapcontext (queue_enqueue)");
     abort();
   }

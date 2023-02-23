@@ -23,9 +23,17 @@ typedef struct {
 	// Put fields for semaphore here
 } kfc_sem_t;
 
+enum thread_state {
+  READY,
+  RUNNING,
+  WAITING,
+  FINISHED,
+};
+
 typedef struct {
   tid_t tid;
   char stack_allocated; // if stack was allocated by kfc
+  enum thread_state state;
   ucontext_t ctx;
 } kfc_ctx_t;
 
