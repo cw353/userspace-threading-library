@@ -5,6 +5,7 @@
 
 #include "kfc.h"
 #include "queue.h"
+#include "bitvec.h"
 #include "ucontext.h"
 #include "valgrind.h"
 
@@ -12,7 +13,7 @@ static int inited = 0;
 
 // XXX synchronize access later
 
-static tid_t next_tid = KFC_TID_MAIN;
+static bitvec_t bitvec; // bit i is 1 if tid i is in use and 0 otherwise
 
 static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
 
@@ -21,6 +22,29 @@ static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
 static ucontext_t sched_ctx;
 
 static queue_t ready_queue;
+
+int get_next_tid()
+{
+  // get the first tid that is not in use
+  int tid = bitvec_first_cleared_index(&bitvec);
+  assert((tid + KFC_TID_MAIN) < KFC_MAX_THREADS);
+  if (tid < 0) {
+    return -1;
+  }
+
+  // mark tid as in use
+  bitvec_set(&bitvec, tid);
+
+  DPRINTF("*** next tid is %d ***\n", tid+KFC_TID_MAIN);
+  return tid + KFC_TID_MAIN;
+}
+
+void reclaim_tid(tid_t tid)
+{
+  bitvec_clear(&bitvec, tid - KFC_TID_MAIN);
+  DPRINTF("*** reclaiming tid %d ***\n", tid-KFC_TID_MAIN);
+  assert(bitvec_first_cleared_index(&bitvec) <= tid - KFC_TID_MAIN);
+}
 
 /**
  * Schedule the next thread.
@@ -82,6 +106,9 @@ kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
 
+  // initialize bitvector
+  bitvec_init(&bitvec, KFC_MAX_THREADS);
+
   // initialize ready_queue
   if (queue_init(&ready_queue)) {
     perror ("kfc_init (queue_init)");
@@ -106,7 +133,7 @@ kfc_init(int kthreads, int quantum_us)
   }
   
   // initialize kfc_ctx for main thread
-  tid_t tid = next_tid++;
+  tid_t tid = get_next_tid();
   thread_info[tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[tid]->tid = tid;
   thread_info[tid]->state = RUNNING;
@@ -143,6 +170,9 @@ kfc_teardown(void)
     }
   }
  
+  // free tid bitvector
+  bitvec_destroy(&bitvec);
+
   // free scheduler context
   free(sched_ctx.uc_stack.ss_sp);
 
@@ -188,11 +218,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 	assert(inited);
 
   // create new context (return early with error if KFC_MAX_THREADS has been reached) (XXX change later to allow tid reuse)
-  if (next_tid == KFC_MAX_THREADS) {
-    perror("kfc_create (KFC_MAX_THREADS reached)");
-    return -1;
-  }
-  tid_t new_tid = next_tid++;
+  tid_t new_tid = get_next_tid(); 
   *ptid = new_tid;
   thread_info[new_tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[new_tid]->tid = new_tid;
@@ -240,6 +266,9 @@ kfc_exit(void *ret)
   // update thread state
   assert(thread_info[current_tid]->state == RUNNING);
   thread_info[current_tid]->state = FINISHED;
+
+  // mark tid as no longer in use (XXX move to join later)
+  reclaim_tid(current_tid);
 
   // ask scheduler to schedule next thread
   if (setcontext(&sched_ctx)) {
