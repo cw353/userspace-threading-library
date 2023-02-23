@@ -75,7 +75,10 @@ kfc_init(int kthreads, int quantum_us)
   }
 
   // initialize scheduler context
-  getcontext(&sched_ctx);
+  if (getcontext(&sched_ctx)) {
+    perror("kfc_init (getcontext)");
+    abort();
+  }
 
   // allocate stack for scheduler context
   sched_ctx.uc_stack.ss_size = KFC_DEF_STACK_SIZE;
@@ -84,7 +87,12 @@ kfc_init(int kthreads, int quantum_us)
   VALGRIND_STACK_REGISTER(sched_ctx.uc_stack.ss_sp, sched_ctx.uc_stack.ss_sp + sched_ctx.uc_stack.ss_size);
 
   // make scheduler context
+  errno = 0;
   makecontext(&sched_ctx, (void (*)(void)) schedule, 0);
+  if (errno != 0) {
+    perror("kfc_init (makecontext)");
+    abort();
+  }
   
   // initialize kfc_ctx for main thread
   tid_t tid = next_tid++; // XXX synchronize later
@@ -183,7 +191,10 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   *ptid = new_tid;
   thread_info[new_tid] = malloc(sizeof(kfc_ctx_t));
   thread_info[new_tid]->tid = new_tid;
-  getcontext(&thread_info[new_tid]->ctx); // XXX why???
+  if (getcontext(&thread_info[new_tid]->ctx)) {
+    perror("kfc_create (getcontext)");
+    abort();
+  }
 
   // allocate stack for new context
   thread_info[new_tid]->ctx.uc_stack.ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
