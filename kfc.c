@@ -142,11 +142,22 @@ kfc_init(int kthreads, int quantum_us)
   // initialize kfc_ctx for main thread
   tid_t tid = get_next_tid();
   thread_info[tid] = malloc(sizeof(kfc_ctx_t));
+  thread_info[tid]->stack_allocated = 0;
   thread_info[tid]->tid = tid;
   thread_info[tid]->state = RUNNING;
 
 	inited = 1;
 	return 0;
+}
+
+// Precondition: thread_info[tid] != NULL
+void
+destroy_thread(tid_t tid)
+{
+  if (thread_info[tid]->stack_allocated) {
+    free(thread_info[tid]->ctx.uc_stack.ss_sp);
+  }
+  free(thread_info[tid]);
 }
 
 /**
@@ -165,26 +176,25 @@ kfc_teardown(void)
 {
 	assert(inited);
 
+  // destroy queue
   queue_destroy(&ready_queue);
 
-  // XXX move cleanup of non-main threads to kfc_join later
-  for (int tid = KFC_TID_MAIN+1; tid < KFC_MAX_THREADS; tid++) {
-    if (thread_info[tid]) {
-      if (thread_info[tid]->stack_allocated) {
-        free(thread_info[tid]->ctx.uc_stack.ss_sp);
-      }
-      free(thread_info[tid]);
-    }
-  }
- 
-  // free tid bitvector
+  // destroy bitvector
   bitvec_destroy(&bitvec);
 
-  // free scheduler context
+  // free scheduler stack
   free(sched_ctx.uc_stack.ss_sp);
 
+  // free zombie threads
+  for (int i = KFC_TID_MAIN + 1; i < KFC_MAX_THREADS; i++) {
+    if (thread_info[i]) {
+      destroy_thread(i);
+    }
+  }
+
   // free main thread
-  free(thread_info[KFC_TID_MAIN]);
+  destroy_thread(KFC_TID_MAIN);
+  //free(thread_info[KFC_TID_MAIN]);
 
 	inited = 0;
 }
@@ -289,9 +299,6 @@ kfc_exit(void *ret)
     join_waitlist[current_tid] = -1; // join waitlist for this tid is now empty
   }
 
-  // mark tid as no longer in use (XXX move to join later)
-  //reclaim_tid(current_tid);
-
   // ask scheduler to schedule next thread
   if (setcontext(&sched_ctx)) {
     perror("kfc_exit (setcontext)");
@@ -317,6 +324,7 @@ kfc_join(tid_t tid, void **pret)
 {
 	assert(inited);
 
+  // Block if the target thread is not finished yet
   if (thread_info[tid]->state != FINISHED) {
     // add caller to waitlist
     join_waitlist[tid] = (int) current_tid;
@@ -327,10 +335,21 @@ kfc_join(tid_t tid, void **pret)
       abort();
     }
   }
+
   assert(thread_info[tid]->state == FINISHED);
+
+  // Pass target thread's return value to caller
   if (pret) {
     *pret = thread_info[tid]->retval;
   }
+
+  // Clean up target thread's resources
+  reclaim_tid(tid);
+  if (thread_info[tid]->stack_allocated) {
+    free(thread_info[tid]->ctx.uc_stack.ss_sp);
+  }
+  free(thread_info[tid]);
+  thread_info[tid] = NULL;
 
 	return 0;
 }
