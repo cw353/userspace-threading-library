@@ -15,6 +15,9 @@ int bitvec_init(bitvec_t *bv, size_t n)
   bv->nbits = n;
   bv->nbytes = (7 + n)/8;
   bv->vec = calloc(bv->nbytes, sizeof(unsigned char));
+  if (!bv->vec) {
+    return -1;
+  }
   return 0;
 }
 
