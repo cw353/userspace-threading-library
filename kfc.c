@@ -2,6 +2,7 @@
 #include <sys/types.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <string.h>
 
 #include "kfc.h"
 #include "queue.h"
@@ -17,11 +18,15 @@ static bitvec_t bitvec; // bit i is 1 if tid i is in use and 0 otherwise
 
 static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
 
-static kfc_ctx_t *thread_info[KFC_MAX_THREADS - 1];
+static kfc_ctx_t *thread_info[KFC_MAX_THREADS]; // thread info
 
-static ucontext_t sched_ctx;
+static ucontext_t sched_ctx; // scheduler context
 
-static queue_t ready_queue;
+static queue_t ready_queue; // ready queue
+
+// join_waitlist[i] is the tid of the thread that has called kfc_join
+// on thread i (or -1 if there is no such thread)
+static int join_waitlist[KFC_MAX_THREADS];
 
 int get_next_tid()
 {
@@ -107,7 +112,10 @@ kfc_init(int kthreads, int quantum_us)
 	assert(!inited);
 
   // initialize bitvector
-  bitvec_init(&bitvec, KFC_MAX_THREADS);
+  if (bitvec_init(&bitvec, KFC_MAX_THREADS)) {
+    perror ("kfc_init (bitvec_init)");
+    abort();
+  }
 
   // initialize ready_queue
   if (queue_init(&ready_queue)) {
@@ -115,16 +123,15 @@ kfc_init(int kthreads, int quantum_us)
     abort();
   }
 
+  // initialize join waitlist
+  memset(&join_waitlist, -1, KFC_MAX_THREADS);
+
   // initialize scheduler context
   if (getcontext(&sched_ctx)) {
     perror("kfc_init (getcontext)");
     abort();
   }
-
-  // allocate stack for scheduler context
   allocate_stack(&sched_ctx.uc_stack, NULL, 0);
-
-  // make scheduler context
   errno = 0;
   makecontext(&sched_ctx, (void (*)(void)) schedule, 0);
   if (errno != 0) {
@@ -188,9 +195,11 @@ kfc_teardown(void)
 void trampoline(void *(*start_func)(void *), void *arg)
 {
   assert(thread_info[current_tid]->state == RUNNING);
-  start_func(arg);
-  /*void *ret = start_func(arg);
-  kfc_exit(ret);*/
+
+  // run start_func and record return value
+  thread_info[current_tid]->retval = start_func(arg);
+
+  //kfc_exit(retval);
 }
 
 /**
@@ -267,8 +276,20 @@ kfc_exit(void *ret)
   assert(thread_info[current_tid]->state == RUNNING);
   thread_info[current_tid]->state = FINISHED;
 
+  // return any threads that are waiting on this one to the ready queue
+  int join_tid = join_waitlist[current_tid];
+  if (join_tid >= 0) {
+    assert(join_tid >= 0);
+    DPRINTF("\nadding join_tid %d waiting on tid %d back into the ready queue\n\n", join_tid, current_tid);
+    if (queue_enqueue(&ready_queue, thread_info[join_tid])) {
+      perror("kfc_exit (queue_enqueue)");
+      abort();
+    }
+    join_waitlist[current_tid] = -1; // join waitlist for this tid is now empty
+  }
+
   // mark tid as no longer in use (XXX move to join later)
-  reclaim_tid(current_tid);
+  //reclaim_tid(current_tid);
 
   // ask scheduler to schedule next thread
   if (setcontext(&sched_ctx)) {
@@ -294,6 +315,22 @@ int
 kfc_join(tid_t tid, void **pret)
 {
 	assert(inited);
+
+  if (thread_info[tid]->state != FINISHED) {
+    // add caller to waitlist
+    join_waitlist[tid] = (int) current_tid;
+
+    DPRINTF("\nadding join_tid %d to waitlist for tid %d\n\n", current_tid, tid);
+    // block by saving caller state and swapping to scheduler
+    if (swapcontext(&thread_info[current_tid]->ctx, &sched_ctx)) {
+      perror("kfc_join (swapcontext)");
+      abort();
+    }
+  }
+  assert(thread_info[tid]->state == FINISHED);
+  if (pret) {
+    pret = thread_info[tid]->retval;
+  }
 
 	return 0;
 }
@@ -323,7 +360,7 @@ kfc_yield(void)
   
   // enqueue calling thread
   if (queue_enqueue(&ready_queue, thread_info[current_tid])) {
-    perror("kfc_swapcontext (queue_enqueue)");
+    perror("kfc_yield (queue_enqueue)");
     abort();
   }
   

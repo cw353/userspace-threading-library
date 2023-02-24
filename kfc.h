@@ -34,6 +34,7 @@ typedef struct {
   tid_t tid;
   char stack_allocated; // if stack was allocated by kfc
   enum thread_state state;
+  void *retval;
   ucontext_t ctx;
 } kfc_ctx_t;
 
