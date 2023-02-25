@@ -402,7 +402,8 @@ int
 kfc_sem_init(kfc_sem_t *sem, int value)
 {
 	assert(inited);
-	return 0;
+  sem->counter = value;
+  return queue_init(&sem->queue);
 }
 
 /**
@@ -416,6 +417,15 @@ kfc_sem_init(kfc_sem_t *sem, int value)
 int
 kfc_sem_post(kfc_sem_t *sem)
 {
+  sem->counter++;
+  // alter to check queue size
+  if (queue_size(&sem->queue) > 0) {
+    kfc_ctx_t *ctx = queue_dequeue(&sem->queue);
+    if (queue_enqueue(&ready_queue, ctx)) {
+      perror("kfc_sem_post (queue_enqueue)");
+      abort();
+    }
+  }
 	assert(inited);
 	return 0;
 }
@@ -433,6 +443,22 @@ int
 kfc_sem_wait(kfc_sem_t *sem)
 {
 	assert(inited);
+  assert(sem->counter >= 0);
+  if (sem->counter == 0) {
+    // add to semaphore queue
+    if (queue_enqueue(&sem->queue, thread_info[current_tid])) {
+      perror("kfc_sem_wait (queue_enqueue)");
+      abort();
+    }
+
+    // block by saving caller state and swapping to scheduler
+    if (swapcontext(&thread_info[current_tid]->ctx, &sched_ctx)) {
+      perror("kfc_sem_wait (swapcontext)");
+      abort();
+    }
+  }
+  assert(sem->counter > 0);
+  sem->counter--;
 	return 0;
 }
 
@@ -446,4 +472,5 @@ void
 kfc_sem_destroy(kfc_sem_t *sem)
 {
 	assert(inited);
+  queue_destroy(&sem->queue);
 }

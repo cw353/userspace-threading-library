@@ -5,6 +5,7 @@
 #include <sys/types.h>
 
 #include "ucontext.h"
+#include "queue.h"
 
 #define DPRINTF(...) do { fprintf(stderr, __VA_ARGS__); } while (0)
 
@@ -20,7 +21,8 @@
 typedef unsigned int tid_t;
 
 typedef struct {
-	// Put fields for semaphore here
+  int counter;
+  queue_t queue;
 } kfc_sem_t;
 
 enum thread_state {
