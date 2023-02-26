@@ -294,7 +294,7 @@ kfc_exit(void *ret)
   int join_tid = join_waitlist[current_tid];
   if (join_tid >= 0) {
     assert(join_tid != current_tid);
-    assert(thread_info[join_tid]->state == WAITING);
+    assert(thread_info[join_tid]->state == WAITING_JOIN);
     thread_info[join_tid]->state = READY;
     if (queue_enqueue(&ready_queue, thread_info[join_tid])) {
       perror("kfc_exit (queue_enqueue)");
@@ -332,7 +332,7 @@ kfc_join(tid_t tid, void **pret)
   if (thread_info[tid]->state != FINISHED) {
     // add caller to waitlist
     assert(thread_info[current_tid]->state == RUNNING);
-    thread_info[current_tid]->state = WAITING;
+    thread_info[current_tid]->state = WAITING_JOIN;
     join_waitlist[tid] = (int) current_tid; // cast to int for comparison with -1
 
     // block by saving caller state and swapping to scheduler
@@ -431,7 +431,7 @@ kfc_sem_post(kfc_sem_t *sem)
   if (queue_size(&sem->queue) > 0) {
     kfc_ctx_t *ctx = queue_dequeue(&sem->queue);
     assert(ctx);
-    assert(ctx->state == WAITING);
+    assert(ctx->state == WAITING_SEM);
     ctx->state = READY;
     if (queue_enqueue(&ready_queue, ctx)) {
       perror("kfc_sem_post (queue_enqueue)");
@@ -459,7 +459,7 @@ kfc_sem_wait(kfc_sem_t *sem)
   // block if the counter is not above 0
   if (sem->counter == 0) {
     // add to semaphore queue
-    thread_info[current_tid]->state = WAITING;
+    thread_info[current_tid]->state = WAITING_SEM;
     if (queue_enqueue(&sem->queue, thread_info[current_tid])) {
       perror("kfc_sem_wait (queue_enqueue)");
       abort();

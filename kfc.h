@@ -28,7 +28,8 @@ typedef struct {
 enum thread_state {
   READY,
   RUNNING,
-  WAITING,
+  WAITING_JOIN,
+  WAITING_SEM,
   FINISHED,
 };
 
