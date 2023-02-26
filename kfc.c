@@ -161,6 +161,7 @@ destroy_thread(tid_t tid)
     free(thread_info[tid]->ctx.uc_stack.ss_sp);
   }
   free(thread_info[tid]);
+  thread_info[tid] = NULL;
 }
 
 /**
@@ -351,11 +352,7 @@ kfc_join(tid_t tid, void **pret)
 
   // Clean up target thread's resources
   reclaim_tid(tid);
-  if (thread_info[tid]->stack_allocated) {
-    free(thread_info[tid]->ctx.uc_stack.ss_sp);
-  }
-  free(thread_info[tid]);
-  thread_info[tid] = NULL;
+  destroy_thread(tid);
 
 	return 0;
 }
