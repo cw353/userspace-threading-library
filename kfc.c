@@ -64,8 +64,11 @@ void schedule()
   // update current_tid
   current_tid = next_ctx->tid;
 
-  // schedule next thread
+  // update thread state
+  assert(next_ctx->state == READY);
   next_ctx->state = RUNNING;
+
+  // schedule thread
   if (setcontext(&next_ctx->ctx)) {
     perror("schedule (setcontext)");
     abort();
@@ -194,7 +197,6 @@ kfc_teardown(void)
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
-  //free(thread_info[KFC_TID_MAIN]);
 
 	inited = 0;
 }
@@ -206,10 +208,8 @@ void trampoline(void *(*start_func)(void *), void *arg)
 {
   assert(thread_info[current_tid]->state == RUNNING);
 
-  // run start_func
-  void *retval = start_func(arg);
-
-  kfc_exit(retval);
+  // run start_func and pass return value to kfc_exit
+  kfc_exit(start_func(arg));
 
 }
 
@@ -283,15 +283,18 @@ kfc_exit(void *ret)
 {
 	assert(inited);
 
-  // update thread state
+  // update thread state and save return value
   assert(thread_info[current_tid]->state == RUNNING);
   thread_info[current_tid]->state = FINISHED;
   thread_info[current_tid]->retval = ret;
   
-  // return any threads that are waiting on this one to the ready queue
+  // if another thread is waiting to join on this thread,
+  // return it to the ready queue
   int join_tid = join_waitlist[current_tid];
   if (join_tid >= 0) {
-    assert(join_tid >= 0);
+    assert(join_tid != current_tid);
+    assert(thread_info[join_tid]->state == WAITING);
+    thread_info[join_tid]->state = READY;
     if (queue_enqueue(&ready_queue, thread_info[join_tid])) {
       perror("kfc_exit (queue_enqueue)");
       abort();
@@ -327,7 +330,9 @@ kfc_join(tid_t tid, void **pret)
   // Block if the target thread is not finished yet
   if (thread_info[tid]->state != FINISHED) {
     // add caller to waitlist
-    join_waitlist[tid] = (int) current_tid;
+    assert(thread_info[current_tid]->state == RUNNING);
+    thread_info[current_tid]->state = WAITING;
+    join_waitlist[tid] = (int) current_tid; // cast to int for comparison with -1
 
     // block by saving caller state and swapping to scheduler
     if (swapcontext(&thread_info[current_tid]->ctx, &sched_ctx)) {
@@ -336,6 +341,7 @@ kfc_join(tid_t tid, void **pret)
     }
   }
 
+  // continue once the target thread has finished
   assert(thread_info[tid]->state == FINISHED);
 
   // Pass target thread's return value to caller
@@ -378,6 +384,8 @@ kfc_yield(void)
 	assert(inited);
   
   // enqueue calling thread
+  assert(thread_info[current_tid]->state == RUNNING);
+  thread_info[current_tid]->state = READY;
   if (queue_enqueue(&ready_queue, thread_info[current_tid])) {
     perror("kfc_yield (queue_enqueue)");
     abort();
@@ -417,16 +425,22 @@ kfc_sem_init(kfc_sem_t *sem, int value)
 int
 kfc_sem_post(kfc_sem_t *sem)
 {
+	assert(inited);
+
+  // increase counter
   sem->counter++;
-  // alter to check queue size
+
+  // if a thread has been waiting to decrement counter, return it to the ready queue
   if (queue_size(&sem->queue) > 0) {
     kfc_ctx_t *ctx = queue_dequeue(&sem->queue);
+    assert(ctx);
+    assert(ctx->state == WAITING);
+    ctx->state = READY;
     if (queue_enqueue(&ready_queue, ctx)) {
       perror("kfc_sem_post (queue_enqueue)");
       abort();
     }
   }
-	assert(inited);
 	return 0;
 }
 
@@ -444,8 +458,11 @@ kfc_sem_wait(kfc_sem_t *sem)
 {
 	assert(inited);
   assert(sem->counter >= 0);
+
+  // block if the counter is not above 0
   if (sem->counter == 0) {
     // add to semaphore queue
+    thread_info[current_tid]->state = WAITING;
     if (queue_enqueue(&sem->queue, thread_info[current_tid])) {
       perror("kfc_sem_wait (queue_enqueue)");
       abort();
@@ -457,6 +474,8 @@ kfc_sem_wait(kfc_sem_t *sem)
       abort();
     }
   }
+
+  // decrement the counter once it is above 0
   assert(sem->counter > 0);
   sem->counter--;
 	return 0;
