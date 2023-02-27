@@ -39,7 +39,7 @@ typedef struct {
   enum thread_state state;
   void *retval;
   ucontext_t ctx;
-} kfc_ctx_t;
+} kfc_pcb_t;
 
 /**************************
  * Public interface
