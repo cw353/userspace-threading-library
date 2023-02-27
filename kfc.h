@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <sys/types.h>
 
+#include "kthread.h"
 #include "ucontext.h"
 #include "queue.h"
 
@@ -41,6 +42,11 @@ typedef struct {
   int join_tid; // tid of thread waiting to join on this thread (-1 if none)
   ucontext_t ctx;
 } kfc_pcb_t;
+
+struct ready_queue {
+  queue_t queue;
+  kthread_mutex_t mutex;
+};
 
 /**************************
  * Public interface

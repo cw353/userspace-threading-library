@@ -23,7 +23,7 @@ static kfc_pcb_t *thread_pcbs[KFC_MAX_THREADS]; // thread info
 
 static ucontext_t sched_ctx; // scheduler context
 
-static queue_t ready_queue; // ready queue
+static struct ready_queue rqueue;
 
 static kthread_t *kthread_pcbs;
 static size_t num_kthreads;
@@ -61,10 +61,10 @@ void reclaim_tid(tid_t tid)
  */
 void schedule()
 {
-  // get next thread from ready_queue (fcfs)
+  // get next thread from ready queue (fcfs)
   kfc_pcb_t *next_pcb;
-  if (!(next_pcb = queue_dequeue(&ready_queue))) {
-    perror("schedule - ready_queue is empty");
+  if (!(next_pcb = queue_dequeue(&rqueue.queue))) {
+    perror("schedule - rqueue.queue is empty");
     return;
   }
 
@@ -138,9 +138,13 @@ kfc_init(int kthreads, int quantum_us)
     abort();
   }
 
-  // initialize ready_queue
-  if (queue_init(&ready_queue)) {
+  // initialize ready queue and its synchronization constructs
+  if (queue_init(&rqueue.queue)) {
     perror ("kfc_init (queue_init)");
+    abort();
+  }
+  if (kthread_mutex_init(&rqueue.mutex)) {
+    perror("kfc_init (kthread_mutex_init)");
     abort();
   }
 
@@ -198,8 +202,9 @@ kfc_teardown(void)
 {
 	assert(inited);
   
-  // destroy queue
-  queue_destroy(&ready_queue);
+  // destroy ready queue
+  queue_destroy(&rqueue.queue);
+  kthread_mutex_destroy(&rqueue.mutex);
 
   // destroy bitvector
   bitvec_destroy(&bitvec);
@@ -291,8 +296,8 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
     abort();
   }
 
-  // add new context to ready_queue
-  if (queue_enqueue(&ready_queue, thread_pcbs[new_tid])) {
+  // add new context to ready queue
+  if (queue_enqueue(&rqueue.queue, thread_pcbs[new_tid])) {
     perror("kfc_create (queue_enqueue)");
     abort();
   }
@@ -323,7 +328,7 @@ kfc_exit(void *ret)
     assert(join_tid != current_tid);
     assert(thread_pcbs[join_tid]->state == WAITING_JOIN);
     thread_pcbs[join_tid]->state = READY;
-    if (queue_enqueue(&ready_queue, thread_pcbs[join_tid])) {
+    if (queue_enqueue(&rqueue.queue, thread_pcbs[join_tid])) {
       perror("kfc_exit (queue_enqueue)");
       abort();
     }
@@ -411,7 +416,7 @@ kfc_yield(void)
   // enqueue calling thread
   assert(thread_pcbs[current_tid]->state == RUNNING);
   thread_pcbs[current_tid]->state = READY;
-  if (queue_enqueue(&ready_queue, thread_pcbs[current_tid])) {
+  if (queue_enqueue(&rqueue.queue, thread_pcbs[current_tid])) {
     perror("kfc_yield (queue_enqueue)");
     abort();
   }
@@ -461,7 +466,7 @@ kfc_sem_post(kfc_sem_t *sem)
     assert(pcb);
     assert(pcb->state == WAITING_SEM);
     pcb->state = READY;
-    if (queue_enqueue(&ready_queue, pcb)) {
+    if (queue_enqueue(&rqueue.queue, pcb)) {
       perror("kfc_sem_post (queue_enqueue)");
       abort();
     }
