@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "kfc.h"
+#include "kthread.h"
 #include "queue.h"
 #include "bitvec.h"
 #include "ucontext.h"
@@ -27,6 +28,16 @@ static queue_t ready_queue; // ready queue
 // join_waitlist[i] is the tid of the thread that has called kfc_join
 // on thread i (or -1 if there is no such thread)
 static int join_waitlist[KFC_MAX_THREADS];
+
+static kthread_t *kthread_info;
+static size_t num_kthreads;
+
+void *
+kthread_main(void *arg)
+{
+  DPRINTF("kthread_main\n");
+  return 0;
+}
 
 int get_next_tid()
 {
@@ -112,6 +123,19 @@ kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
 
+  num_kthreads = kthreads;
+
+  // initialize kthread_info
+  kthread_info = malloc(num_kthreads * sizeof(kthread_t));
+
+  // create kthreads
+  for (int i = 0; i < num_kthreads; i++) {
+    if (kthread_create(&kthread_info[i], kthread_main, NULL)) {
+      perror("kfc_init (kthread_create)");
+      abort();
+    }
+  }
+
   // initialize bitvector
   if (bitvec_init(&bitvec, KFC_MAX_THREADS)) {
     perror ("kfc_init (bitvec_init)");
@@ -179,7 +203,7 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
-
+  
   // destroy queue
   queue_destroy(&ready_queue);
 
@@ -195,6 +219,14 @@ kfc_teardown(void)
       destroy_thread(i);
     }
   }
+
+  // join kthreads
+  for (int i = 0; i < num_kthreads; i++) {
+    kthread_join(kthread_info[i], NULL);
+  }
+  
+  // free kthread_info
+  free(kthread_info);
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
