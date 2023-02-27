@@ -25,10 +25,6 @@ static ucontext_t sched_ctx; // scheduler context
 
 static queue_t ready_queue; // ready queue
 
-// join_waitlist[i] is the tid of the thread that has called kfc_join
-// on thread i (or -1 if there is no such thread)
-static int join_waitlist[KFC_MAX_THREADS];
-
 static kthread_t *kthread_pcbs;
 static size_t num_kthreads;
 
@@ -148,9 +144,6 @@ kfc_init(int kthreads, int quantum_us)
     abort();
   }
 
-  // initialize join waitlist
-  memset(&join_waitlist, -1, KFC_MAX_THREADS);
-
   // initialize scheduler context
   if (getcontext(&sched_ctx)) {
     perror("kfc_init (getcontext)");
@@ -172,6 +165,7 @@ kfc_init(int kthreads, int quantum_us)
   thread_pcbs[tid]->stack_allocated = 0;
   thread_pcbs[tid]->tid = tid;
   thread_pcbs[tid]->state = RUNNING;
+  thread_pcbs[tid]->join_tid = -1;
 
 	inited = 1;
 	return 0;
@@ -276,6 +270,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   thread_pcbs[new_tid] = malloc(sizeof(kfc_pcb_t));
   thread_pcbs[new_tid]->tid = new_tid;
   thread_pcbs[new_tid]->state = READY;
+  thread_pcbs[new_tid]->join_tid = -1;
   if (getcontext(&thread_pcbs[new_tid]->ctx)) {
     perror("kfc_create (getcontext)");
     abort();
@@ -323,7 +318,7 @@ kfc_exit(void *ret)
   
   // if another thread is waiting to join on this thread,
   // return it to the ready queue
-  int join_tid = join_waitlist[current_tid];
+  int join_tid = thread_pcbs[current_tid]->join_tid;
   if (join_tid >= 0) {
     assert(join_tid != current_tid);
     assert(thread_pcbs[join_tid]->state == WAITING_JOIN);
@@ -332,7 +327,8 @@ kfc_exit(void *ret)
       perror("kfc_exit (queue_enqueue)");
       abort();
     }
-    join_waitlist[current_tid] = -1; // join waitlist for this tid is now empty
+    // no thread waiting to join on this thread any more
+    thread_pcbs[current_tid]->join_tid = -1;
   }
 
   // ask scheduler to schedule next thread
@@ -365,7 +361,7 @@ kfc_join(tid_t tid, void **pret)
     // add caller to waitlist
     assert(thread_pcbs[current_tid]->state == RUNNING);
     thread_pcbs[current_tid]->state = WAITING_JOIN;
-    join_waitlist[tid] = (int) current_tid; // cast to int for comparison with -1
+    thread_pcbs[tid]->join_tid = (int) current_tid; // cast to int for comparison with -1
 
     // block by saving caller state and swapping to scheduler
     if (swapcontext(&thread_pcbs[current_tid]->ctx, &sched_ctx)) {

@@ -38,6 +38,7 @@ typedef struct {
   char stack_allocated; // if stack was allocated by kfc
   enum thread_state state;
   void *retval;
+  int join_tid; // tid of thread waiting to join on this thread (-1 if none)
   ucontext_t ctx;
 } kfc_pcb_t;
 
