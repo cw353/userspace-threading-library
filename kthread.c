@@ -192,3 +192,20 @@ int kthread_sem_wait(kthread_sem_t *sem) {
 void kthread_sem_destroy(kthread_sem_t *sem) {
 	sem_destroy(sem);
 }
+
+int kthread_rwlock_init(pthread_rwlock_t *restrict rwlock,
+    const pthread_rwlockattr_t *restrict attr) {
+  return pthread_rwlock_init(rwlock, attr);
+}
+
+int kthread_rwlock_destroy(pthread_rwlock_t *restrict rwlock) {
+  return pthread_rwlock_destroy(rwlock);
+}
+
+int kthread_rwlock_rdlock(pthread_rwlock_t *rwlock) {
+  return pthread_rwlock_rdlock(rwlock);
+}
+
+int kthread_rwlock_wrlock(pthread_rwlock_t *rwlock) {
+  return pthread_rwlock_wrlock(rwlock);
+}

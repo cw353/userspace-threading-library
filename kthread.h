@@ -9,6 +9,7 @@
 typedef pid_t kthread_t;
 typedef pthread_mutex_t kthread_mutex_t;
 typedef pthread_cond_t kthread_cond_t;
+typedef pthread_rwlock_t kthread_rwlock_t;
 typedef sem_t kthread_sem_t;
 
 int kthread_create(kthread_t *ptid, void *(*start_func)(void *), void *arg);
@@ -30,5 +31,14 @@ int kthread_sem_init(kthread_sem_t *sem, int value);
 int kthread_sem_post(kthread_sem_t *sem);
 int kthread_sem_wait(kthread_sem_t *sem);
 void kthread_sem_destroy(kthread_sem_t *sem);
+
+int kthread_rwlock_init(pthread_rwlock_t *restrict rwlock,
+    const pthread_rwlockattr_t *restrict attr);
+
+int kthread_rwlock_destroy(pthread_rwlock_t *restrict rwlock);
+
+int kthread_rwlock_rdlock(pthread_rwlock_t *rwlock);
+
+int kthread_rwlock_wrlock(pthread_rwlock_t *rwlock);
 
 #endif

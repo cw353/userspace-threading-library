@@ -13,18 +13,21 @@
 
 static int inited = 0;
 
-// XXX synchronize access later
+// synchronized shared data
+static struct ready_queue rqueue;
 
 static bitvec_t bitvec; // bit i is 1 if tid i is in use and 0 otherwise
-
-static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
+static kthread_mutex_t bitvec_lock;
 
 static kfc_pcb_t *thread_pcbs[KFC_MAX_THREADS]; // thread info
 
+
+// shared data that should go into kthread_pcbs
 static ucontext_t sched_ctx; // scheduler context
+static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
 
-static struct ready_queue rqueue;
 
+// shared data that doesn't need to be synchronized
 static kthread_t *kthread_pcbs;
 static size_t num_kthreads;
 
@@ -37,50 +40,85 @@ kthread_main(void *arg)
 
 int get_next_tid()
 {
-  // get the first tid that is not in use
+  int ret;
+
+  if (kthread_mutex_lock(&bitvec_lock)) {
+    perror("get_next_tid (kthread_mutex_lock)");
+    abort();
+  }
   int tid = bitvec_first_cleared_index(&bitvec);
-  assert((tid + KFC_TID_MAIN) < KFC_MAX_THREADS);
   if (tid < 0) {
-    return -1;
+    // no tid not in use found
+    ret = -1;
+  } else {
+    // mark tid as in use
+    bitvec_set(&bitvec, tid);
+    ret = tid + KFC_TID_MAIN;
+  }
+  if (kthread_mutex_unlock(&bitvec_lock)) {
+    perror("get_next_tid (kthread_mutex_unlock)");
+    abort();
   }
 
-  // mark tid as in use
-  bitvec_set(&bitvec, tid);
-
-  return tid + KFC_TID_MAIN;
+  return ret;
 }
 
 void reclaim_tid(tid_t tid)
 {
+  if (kthread_mutex_lock(&bitvec_lock)) {
+    perror("get_next_tid (kthread_mutex_lock)");
+    abort();
+  }
   bitvec_clear(&bitvec, tid - KFC_TID_MAIN);
-  assert(bitvec_first_cleared_index(&bitvec) <= tid - KFC_TID_MAIN);
+  if (kthread_mutex_unlock(&bitvec_lock)) {
+    perror("get_next_tid (kthread_mutex_unlock)");
+    abort();
+  }
 }
 
 void
 ready_enqueue(kfc_pcb_t *pcb)
 {
-  kthread_mutex_lock(&rqueue.mutex);
-  if (queue_enqueue(&rqueue.queue, pcb)) {
-    perror("ready_enqueue");
+  if (kthread_mutex_lock(&rqueue.mutex)) {
+    perror("ready_enqueue (kthread_mutex_lock)");
     abort();
   }
-  kthread_mutex_unlock(&rqueue.mutex);
-  kthread_cond_signal(&rqueue.not_empty);
+  if (queue_enqueue(&rqueue.queue, pcb)) {
+    perror("ready_enqueue (queue_enqueue)");
+    abort();
+  }
+  if (kthread_mutex_unlock(&rqueue.mutex)) {
+    perror("ready_enqueue (kthread_mutex_unlock)");
+    abort();
+  }
+  if (kthread_cond_signal(&rqueue.not_empty)) {
+    perror("ready_enqueue (kthread_cond_signal)");
+    abort();
+  }
 }
 
 kfc_pcb_t *
 ready_dequeue()
 {
-  kthread_mutex_lock(&rqueue.mutex);
+  if (kthread_mutex_lock(&rqueue.mutex)) {
+    perror("ready_dequeue (kthread_mutex_lock)");
+    abort();
+  }
   while (queue_size(&rqueue.queue) == 0) {
     kthread_cond_wait(&rqueue.not_empty, &rqueue.mutex);
   }
   kfc_pcb_t *pcb = queue_dequeue(&rqueue.queue);
   assert(pcb);
   if (queue_size(&rqueue.queue) > 0) {
-    kthread_cond_signal(&rqueue.not_empty);  
+    if (kthread_cond_signal(&rqueue.not_empty)) {
+      perror("ready_dequeue (kthread_cond_signal)");
+      abort();
+    }
   }
-  kthread_mutex_unlock(&rqueue.mutex);
+  if (kthread_mutex_unlock(&rqueue.mutex)) {
+    perror("ready_dequeue (kthread_mutex_unlock)");
+    abort();
+  }
   return pcb;
 }
 
@@ -156,9 +194,13 @@ kfc_init(int kthreads, int quantum_us)
     }
   }
 
-  // initialize bitvector
+  // initialize bitvector and its lock
   if (bitvec_init(&bitvec, KFC_MAX_THREADS)) {
     perror ("kfc_init (bitvec_init)");
+    abort();
+  }
+  if (kthread_mutex_init(&bitvec_lock)) {
+    perror("kfc_init (kthread_mutex_init)");
     abort();
   }
 
@@ -230,13 +272,14 @@ kfc_teardown(void)
 {
 	assert(inited);
   
-  // destroy ready queue
+  // destroy ready queue and its synchronization constructs
   queue_destroy(&rqueue.queue);
   kthread_mutex_destroy(&rqueue.mutex);
   kthread_cond_destroy(&rqueue.not_empty);
 
-  // destroy bitvector
+  // destroy bitvector and its synchronization constructs
   bitvec_destroy(&bitvec);
+  kthread_mutex_destroy(&bitvec_lock);
 
   // free scheduler stack
   free(sched_ctx.uc_stack.ss_sp);
