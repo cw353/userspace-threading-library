@@ -209,3 +209,7 @@ int kthread_rwlock_rdlock(pthread_rwlock_t *rwlock) {
 int kthread_rwlock_wrlock(pthread_rwlock_t *rwlock) {
   return pthread_rwlock_wrlock(rwlock);
 }
+
+int kthread_rwlock_unlock(pthread_rwlock_t *rwlock) {
+  return pthread_rwlock_unlock(rwlock);
+}
