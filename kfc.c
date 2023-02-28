@@ -23,9 +23,6 @@ static kfc_upcb_t *pcbs[KFC_MAX_THREADS]; // user thread PCBs
 static kthread_rwlock_t pcbs_lock;
 
 
-// shared data that should go into kthread_info
-static ucontext_t sched_ctx; // scheduler context
-
 // shared data that doesn't need to be synchronized
 static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
@@ -43,14 +40,16 @@ get_kthread_pcb(kthread_t ktid)
   return kpcb;
 }
 
-tid_t get_current_tid()
+tid_t
+get_current_tid()
 {
   return get_kthread_pcb(kthread_self())->current_tid;
 }
 
-void set_current_tid(tid_t tid)
+ucontext_t *
+get_sched_ctx()
 {
-  get_kthread_pcb(kthread_self())->current_tid = tid;
+  return &get_kthread_pcb(kthread_self())->sched_ctx;
 }
 
 void *
@@ -177,7 +176,8 @@ void schedule()
 
   pcbs_wrlock();
 
-  set_current_tid(next_pcb->tid);
+  // update current tid for this kthread
+  get_kthread_pcb(kthread_self())->current_tid = next_pcb->tid;
 
   // update thread state
   assert(next_pcb->state == READY);
@@ -259,21 +259,6 @@ kfc_init(int kthreads, int quantum_us)
     abort();
   }
 
-  // initialize scheduler context
-  if (getcontext(&sched_ctx)) {
-    perror("kfc_init (getcontext)");
-    abort();
-  }
-  // XXX successor context is main thread ???
-  sched_ctx.uc_link = &pcbs[KFC_TID_MAIN]->ctx;
-  allocate_stack(&sched_ctx.uc_stack, NULL, 0);
-  errno = 0;
-  makecontext(&sched_ctx, (void (*)(void)) schedule, 0);
-  if (errno != 0) {
-    perror("kfc_init (makecontext)");
-    abort();
-  }
-  
   // initialize kfc_ctx for main thread
   tid_t tid = get_next_tid();
   pcbs[tid] = malloc(sizeof(kfc_upcb_t));
@@ -377,9 +362,6 @@ kfc_teardown(void)
   }
   free(kthread_info);
 
-  // free scheduler stack
-  free(sched_ctx.uc_stack.ss_sp);
-
   // free main thread
   destroy_thread(KFC_TID_MAIN);
 
@@ -444,7 +426,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   pcbs[new_tid]->stack_allocated = stack_base ? 0 : 1;
 
   // set scheduler as successor context
-  pcbs[new_tid]->ctx.uc_link = &sched_ctx;
+  //pcbs[new_tid]->ctx.uc_link = &sched_ctx;
   
   // makecontext
   errno = 0;
@@ -496,7 +478,7 @@ kfc_exit(void *ret)
   pcbs_unlock();
 
   // ask scheduler to schedule next thread
-  if (setcontext(&sched_ctx)) {
+  if (setcontext(get_sched_ctx())) {
     perror("kfc_exit (setcontext)");
     abort();
   }
@@ -536,7 +518,7 @@ kfc_join(tid_t tid, void **pret)
     pcbs_unlock();
 
     // block by saving caller state and swapping to scheduler
-    if (swapcontext(&current_pcb->ctx, &sched_ctx)) {
+    if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {
       perror("kfc_join (swapcontext)");
       abort();
     }
@@ -598,7 +580,7 @@ kfc_yield(void)
   ready_enqueue(pcb);
   
   // save caller state and swap to scheduler
-  if (swapcontext(&pcb->ctx, &sched_ctx)) {
+  if (swapcontext(&pcb->ctx, get_sched_ctx())) {
     perror("kfc_yield (swapcontext)");
     abort();
   }
@@ -686,7 +668,7 @@ kfc_sem_wait(kfc_sem_t *sem)
 
 
     // block by saving caller state and swapping to scheduler
-    if (swapcontext(&pcb->ctx, &sched_ctx)) {
+    if (swapcontext(&pcb->ctx, get_sched_ctx())) {
       perror("kfc_sem_wait (swapcontext)");
       abort();
     }
