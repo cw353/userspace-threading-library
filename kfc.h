@@ -44,10 +44,10 @@ typedef struct {
 } kfc_upcb_t;
 
 typedef struct {
-  kthread_t ktid;
-  tid_t current_utid;
+  int ktid;
+  int current_tid;
   ucontext_t sched_ctx;
-} kfc_kpcb_t;
+} kfc_kinfo_t;
 
 struct ready_queue {
   queue_t queue;

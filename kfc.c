@@ -29,13 +29,13 @@ static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
 
 
 // shared data that doesn't need to be synchronized
-static kfc_kpcb_t **kthread_info;
+static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
 
-kfc_kpcb_t *
+kfc_kinfo_t *
 get_kthread_pcb(kthread_t ktid)
 {
-  kfc_kpcb_t *kpcb = NULL;
+  kfc_kinfo_t *kpcb = NULL;
   for (int i = 0; i < num_kthreads; i++) {
     if (kthread_info[i]->ktid == ktid) {
       kpcb = kthread_info[i];
@@ -45,10 +45,19 @@ get_kthread_pcb(kthread_t ktid)
   return kpcb;
 }
 
-void *
-kthread_main(void *arg)
+tid_t get_current_tid()
 {
-  assert(get_kthread_pcb(kthread_self())->ktid == kthread_self());
+  return get_kthread_pcb(kthread_self())->current_tid;
+}
+
+void set_current_tid(tid_t tid)
+{
+  get_kthread_pcb(kthread_self())->current_tid = tid;
+}
+
+void *
+kthread_func(void *arg)
+{
   return 0;
 }
 
@@ -278,14 +287,14 @@ kfc_init(int kthreads, int quantum_us)
 
   // initialize kthread_info
   num_kthreads = kthreads;
-  kthread_info = malloc(num_kthreads * sizeof(kfc_kpcb_t *));
+  kthread_info = malloc(num_kthreads * sizeof(kfc_kinfo_t *));
 
   // create kthread_info
   for (int i = 0; i < num_kthreads; i++) {
-    kthread_info[i] = malloc(sizeof(kfc_kpcb_t));
-    kthread_info[i]->ktid = -1; // XXX remove later?
+    kthread_info[i] = malloc(sizeof(kfc_kinfo_t));
+    kthread_info[i]->ktid = i == 0 ? kthread_self() : -1;
     // assign current user tid
-    kthread_info[i]->current_utid = KFC_TID_MAIN;
+    kthread_info[i]->current_tid = i == 0 ? KFC_TID_MAIN : -1;
     // make scheduler context
     if (getcontext(&kthread_info[i]->sched_ctx)) {
       perror("kfc_init (getcontext)");
@@ -302,8 +311,8 @@ kfc_init(int kthreads, int quantum_us)
   }
 
   // create kthreads
-  for (int i = 0; i < num_kthreads; i++) {
-    if (kthread_create(&kthread_info[i]->ktid, kthread_main, NULL)) {
+  for (int i = 1; i < num_kthreads; i++) {
+    if (kthread_create(&kthread_info[i]->ktid, kthread_func, NULL)) {
       perror("kfc_init (kthread_create)");
       abort();
     }
