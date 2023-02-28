@@ -46,6 +46,7 @@ typedef struct {
 struct ready_queue {
   queue_t queue;
   kthread_mutex_t mutex;
+  kthread_cond_t not_empty;
 };
 
 /**************************
