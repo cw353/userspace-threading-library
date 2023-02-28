@@ -25,8 +25,6 @@ static kthread_rwlock_t pcbs_lock;
 
 // shared data that should go into kthread_info
 static ucontext_t sched_ctx; // scheduler context
-static tid_t current_tid = KFC_TID_MAIN; // tid of currently executing thread
-
 
 // shared data that doesn't need to be synchronized
 static kfc_kinfo_t **kthread_info;
@@ -179,8 +177,7 @@ void schedule()
 
   pcbs_wrlock();
 
-  // update current_tid
-  current_tid = next_pcb->tid;
+  set_current_tid(next_pcb->tid);
 
   // update thread state
   assert(next_pcb->state == READY);
@@ -395,7 +392,7 @@ kfc_teardown(void)
 void trampoline(void *(*start_func)(void *), void *arg)
 {
   pcbs_rdlock();
-  assert(pcbs[current_tid]->state == RUNNING);
+  assert(pcbs[get_current_tid()]->state == RUNNING);
   pcbs_unlock();
 
   // run start_func and pass return value to kfc_exit
@@ -449,7 +446,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   // set scheduler as successor context
   pcbs[new_tid]->ctx.uc_link = &sched_ctx;
   
-  // makecontext (note that current_tid is the tid of the calling context)
+  // makecontext
   errno = 0;
   makecontext(&pcbs[new_tid]->ctx, (void (*)(void)) trampoline, 2, start_func, arg);
   if (errno != 0) {
@@ -479,6 +476,7 @@ kfc_exit(void *ret)
   // update thread state and save return value
   pcbs_wrlock();
 
+  tid_t current_tid = get_current_tid();
   assert(pcbs[current_tid]->state == RUNNING);
   pcbs[current_tid]->state = FINISHED;
   pcbs[current_tid]->retval = ret;
@@ -524,6 +522,7 @@ kfc_join(tid_t tid, void **pret)
 
   pcbs_wrlock();
   
+  tid_t current_tid = get_current_tid();
   kfc_upcb_t *current_pcb = pcbs[current_tid];
   kfc_upcb_t *target_pcb = pcbs[tid]; 
 
@@ -573,7 +572,7 @@ tid_t
 kfc_self(void)
 {
 	assert(inited);
-	return current_tid;
+	return get_current_tid();
 }
 
 /**
@@ -590,7 +589,7 @@ kfc_yield(void)
   pcbs_wrlock();
   
   // enqueue calling thread
-  kfc_upcb_t *pcb = pcbs[current_tid];
+  kfc_upcb_t *pcb = pcbs[get_current_tid()];
   assert(pcb->state == RUNNING);
   pcb->state = READY;
 
@@ -675,7 +674,7 @@ kfc_sem_wait(kfc_sem_t *sem)
 
     pcbs_wrlock();
 
-    kfc_upcb_t *pcb = pcbs[current_tid];
+    kfc_upcb_t *pcb = pcbs[get_current_tid()];
     pcb->state = WAITING_SEM;
 
     pcbs_unlock();
