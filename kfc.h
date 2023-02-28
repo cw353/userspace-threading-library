@@ -41,7 +41,13 @@ typedef struct {
   void *retval;
   int join_tid; // tid of thread waiting to join on this thread (-1 if none)
   ucontext_t ctx;
-} kfc_pcb_t;
+} kfc_upcb_t;
+
+typedef struct {
+  kthread_t ktid;
+  tid_t current_utid;
+  ucontext_t sched_ctx;
+} kfc_kpcb_t;
 
 struct ready_queue {
   queue_t queue;
