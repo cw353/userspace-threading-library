@@ -20,17 +20,17 @@ int kthread_join(kthread_t tid, void **pret);
 int kthread_mutex_init(kthread_mutex_t *mutex);
 int kthread_mutex_lock(kthread_mutex_t *mutex);
 int kthread_mutex_unlock(kthread_mutex_t *mutex);
-void kthread_mutex_destroy(kthread_mutex_t *mutex);
+int kthread_mutex_destroy(kthread_mutex_t *mutex);
 
 int kthread_cond_init(kthread_cond_t *cond);
 int kthread_cond_signal(kthread_cond_t *cond);
 int kthread_cond_wait(kthread_cond_t *cond, kthread_mutex_t *mutex);
-void kthread_cond_destroy(kthread_cond_t *cond);
+int kthread_cond_destroy(kthread_cond_t *cond);
 
 int kthread_sem_init(kthread_sem_t *sem, int value);
 int kthread_sem_post(kthread_sem_t *sem);
 int kthread_sem_wait(kthread_sem_t *sem);
-void kthread_sem_destroy(kthread_sem_t *sem);
+int kthread_sem_destroy(kthread_sem_t *sem);
 
 int kthread_rwlock_init(pthread_rwlock_t *restrict rwlock,
     const pthread_rwlockattr_t *restrict attr);

@@ -157,8 +157,8 @@ int kthread_mutex_unlock(kthread_mutex_t *mutex) {
 	return pthread_mutex_unlock(mutex);
 }
 
-void kthread_mutex_destroy(kthread_mutex_t *mutex) {
-	pthread_mutex_destroy(mutex);
+int kthread_mutex_destroy(kthread_mutex_t *mutex) {
+	return pthread_mutex_destroy(mutex);
 }
 
 int kthread_cond_init(kthread_cond_t *cond) {
@@ -173,8 +173,8 @@ int kthread_cond_wait(kthread_cond_t *cond, kthread_mutex_t *mutex) {
 	return pthread_cond_wait(cond, mutex);
 }
 
-void kthread_cond_destroy(kthread_cond_t *cond) {
-	pthread_cond_destroy(cond);
+int kthread_cond_destroy(kthread_cond_t *cond) {
+	return pthread_cond_destroy(cond);
 }
 
 int kthread_sem_init(kthread_sem_t *sem, int value) {
@@ -189,8 +189,8 @@ int kthread_sem_wait(kthread_sem_t *sem) {
 	return sem_wait(sem);
 }
 
-void kthread_sem_destroy(kthread_sem_t *sem) {
-	sem_destroy(sem);
+int kthread_sem_destroy(kthread_sem_t *sem) {
+	return sem_destroy(sem);
 }
 
 int kthread_rwlock_init(pthread_rwlock_t *restrict rwlock,
