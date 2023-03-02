@@ -14,6 +14,8 @@
 static int inited = 0;
 
 // synchronized shared data
+static kthread_sem_t inited_sem;
+
 static struct ready_queue rqueue;
 
 static bitvec_t bitvec; // bit i is 1 if tid i is in use and 0 otherwise
@@ -21,6 +23,7 @@ static kthread_mutex_t bitvec_lock;
 
 static kfc_upcb_t *pcbs[KFC_MAX_THREADS]; // user thread PCBs
 static kthread_rwlock_t pcbs_lock;
+
 
 
 // shared data that doesn't need to be synchronized
@@ -55,6 +58,10 @@ get_sched_ctx()
 void *
 kthread_func(void *arg)
 {
+  DPRINTF("kthread %d started waiting for inited_sem\n", kthread_self());
+  kthread_sem_wait(&inited_sem);
+  DPRINTF("kthread %d finished waiting for inited_sem\n", kthread_self());
+
   if (setcontext(get_sched_ctx())) {
     perror("kfc_exit (setcontext)");
     abort();
@@ -233,6 +240,12 @@ kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
 
+  num_kthreads = kthreads;
+  if (kthread_sem_init(&inited_sem, 0)) {
+    perror("kthread_sem_init");
+    abort();
+  }
+
   // initialize pcbs lock
   if (kthread_rwlock_init(&pcbs_lock, NULL)) {
     perror("kfc_init (kthread_rwlock_init)");
@@ -272,7 +285,6 @@ kfc_init(int kthreads, int quantum_us)
   pcbs[tid]->join_tid = -1;
 
   // initialize kthread_info
-  num_kthreads = kthreads;
   kthread_info = malloc(num_kthreads * sizeof(kfc_kinfo_t *));
 
   // create kthread_info
@@ -304,6 +316,11 @@ kfc_init(int kthreads, int quantum_us)
     }
   }
 	inited = 1;
+
+  for (int i = 0; i < num_kthreads-1; i++) {
+    kthread_sem_post(&inited_sem);
+  }
+
 	return 0;
 
 }
@@ -366,6 +383,11 @@ kfc_teardown(void)
     free(kthread_info[i]);
   }
   free(kthread_info);
+
+  if (kthread_sem_destroy(&inited_sem)) {
+    perror("kthread_sem_destroy");
+    abort();
+  }
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
