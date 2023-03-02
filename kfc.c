@@ -603,7 +603,12 @@ int
 kfc_sem_init(kfc_sem_t *sem, int value)
 {
 	assert(inited);
+
+  int ret;
   sem->counter = value;
+  if ((ret = kthread_mutex_init(&sem->queue_lock))) {
+    return ret;
+  }
   return queue_init(&sem->queue);
 }
 
@@ -624,8 +629,11 @@ kfc_sem_post(kfc_sem_t *sem)
   sem->counter++;
 
   // if a thread has been waiting to decrement counter, return it to the ready queue
+  kthread_mutex_lock(&sem->queue_lock);
   if (queue_size(&sem->queue) > 0) {
+
     kfc_upcb_t *pcb = queue_dequeue(&sem->queue);
+    kthread_mutex_unlock(&sem->queue_lock);
 
     pcbs_wrlock();
 
@@ -636,6 +644,8 @@ kfc_sem_post(kfc_sem_t *sem)
     pcbs_unlock();
     
     ready_enqueue(pcb);
+  } else {
+    kthread_mutex_unlock(&sem->queue_lock);
   }
 	return 0;
 }
@@ -655,8 +665,8 @@ kfc_sem_wait(kfc_sem_t *sem)
 	assert(inited);
   assert(sem->counter >= 0);
 
-  // block if the counter is not above 0
-  if (sem->counter == 0) {
+  // block if the counter is not above 0 (loop for when this context is resumed)
+  while (sem->counter == 0) {
     // add to semaphore queue
 
     pcbs_wrlock();
@@ -666,10 +676,12 @@ kfc_sem_wait(kfc_sem_t *sem)
 
     pcbs_unlock();
     
+    kthread_mutex_lock(&sem->queue_lock);
     if (queue_enqueue(&sem->queue, pcb)) {
       perror("kfc_sem_wait (queue_enqueue)");
       abort();
     }
+    kthread_mutex_unlock(&sem->queue_lock);
 
 
     // block by saving caller state and swapping to scheduler
@@ -696,4 +708,7 @@ kfc_sem_destroy(kfc_sem_t *sem)
 {
 	assert(inited);
   queue_destroy(&sem->queue);
+  if (kthread_mutex_destroy(&sem->queue_lock)) {
+    perror("kthread_mutex_destroy\n");
+  }
 }
