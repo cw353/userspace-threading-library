@@ -55,6 +55,10 @@ get_sched_ctx()
 void *
 kthread_func(void *arg)
 {
+  if (setcontext(get_sched_ctx())) {
+    perror("kfc_exit (setcontext)");
+    abort();
+  }
   return 0;
 }
 
@@ -330,6 +334,7 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
+  DPRINTF("\ncalling %s - kthread %d, tid %d\n", __func__, kthread_self(), get_kthread_pcb(kthread_self())->current_tid);
   
   // destroy ready queue and its synchronization constructs
   queue_destroy(&rqueue.queue);
