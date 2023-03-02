@@ -354,17 +354,17 @@ kfc_teardown(void)
   }
 
   // join kthreads except for self
+  kthread_t self = kthread_self();
   for (int i = 0; i < num_kthreads; i++) {
-    if (kthread_self() != kthread_info[i]->ktid) {
+    if (kthread_info[i]->ktid != self) {
       kthread_join(kthread_info[i]->ktid, NULL);
     }
   }
   
-  
   // destroy ready queue and its synchronization constructs
-  /*queue_destroy(&rqueue.queue);
-  kthread_mutex_destroy(&rqueue.mutex);
-  kthread_cond_destroy(&rqueue.not_empty);
+  while (kthread_mutex_destroy(&rqueue.mutex) == EBUSY);
+  while (kthread_cond_destroy(&rqueue.not_empty) == EBUSY);
+  queue_destroy(&rqueue.queue);
 
   // destroy bitvector and its synchronization constructs
   bitvec_destroy(&bitvec);
@@ -373,15 +373,15 @@ kfc_teardown(void)
   // destroy other synchronization constructs
   kthread_rwlock_destroy(&pcbs_lock);
 
-  // free zombie threads
+  // free zombie threads (exclude KFC_TID_MAIN)
   for (int i = KFC_TID_MAIN + 1; i < KFC_MAX_THREADS; i++) {
     if (pcbs[i]) {
       destroy_thread(i);
     }
-  }*/
+  }
 
   // free kthread_info
-  /*for (int i = 0; i < num_kthreads; i++) {
+  for (int i = 0; i < num_kthreads; i++) {
     free(kthread_info[i]->sched_ctx.uc_stack.ss_sp);
     free(kthread_info[i]);
   }
@@ -389,7 +389,7 @@ kfc_teardown(void)
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
-*/
+
 	inited = 0;
 }
 
