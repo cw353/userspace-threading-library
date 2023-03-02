@@ -22,6 +22,7 @@ static kthread_mutex_t bitvec_lock;
 static kfc_upcb_t *pcbs[KFC_MAX_THREADS]; // user thread PCBs
 static kthread_rwlock_t pcbs_lock;
 
+static kfc_upcb_t exitall;
 
 // shared data that doesn't need to be synchronized
 static kfc_kinfo_t **kthread_info;
@@ -156,6 +157,15 @@ ready_dequeue()
     kthread_cond_wait(&rqueue.not_empty, &rqueue.mutex);
   }
   kfc_upcb_t *pcb = queue_dequeue(&rqueue.queue);
+
+  if (pcb == &exitall) {
+  //if (pcb->tid == KFC_MAX_THREADS) {
+    DPRINTF("kthread %d received exitall\n", kthread_self());
+    kthread_mutex_unlock(&rqueue.mutex);
+    DPRINTF("kthread %d released mutex and is exiting\n", kthread_self());
+    kthread_exit();
+  }
+
   assert(pcb);
   if (queue_size(&rqueue.queue) > 0) {
     if (kthread_cond_signal(&rqueue.not_empty)) {
@@ -232,6 +242,8 @@ int
 kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
+
+  exitall.tid = KFC_MAX_THREADS;
 
   // initialize pcbs lock
   if (kthread_rwlock_init(&pcbs_lock, NULL)) {
@@ -335,9 +347,22 @@ kfc_teardown(void)
 {
 	assert(inited);
   DPRINTF("\ncalling %s - kthread %d, tid %d\n", __func__, kthread_self(), get_kthread_pcb(kthread_self())->current_tid);
+
+  DPRINTF("enqueuing exitall\n");
+  for (int i = 0; i < num_kthreads - 1; i++) {
+    ready_enqueue(&exitall);
+  }
+
+  // join kthreads except for self
+  for (int i = 0; i < num_kthreads; i++) {
+    if (kthread_self() != kthread_info[i]->ktid) {
+      kthread_join(kthread_info[i]->ktid, NULL);
+    }
+  }
+  
   
   // destroy ready queue and its synchronization constructs
-  queue_destroy(&rqueue.queue);
+  /*queue_destroy(&rqueue.queue);
   kthread_mutex_destroy(&rqueue.mutex);
   kthread_cond_destroy(&rqueue.not_empty);
 
@@ -353,15 +378,10 @@ kfc_teardown(void)
     if (pcbs[i]) {
       destroy_thread(i);
     }
-  }
+  }*/
 
-  // join kthreads
-  for (int i = 0; i < num_kthreads; i++) {
-    kthread_join(kthread_info[i]->ktid, NULL);
-  }
-  
   // free kthread_info
-  for (int i = 0; i < num_kthreads; i++) {
+  /*for (int i = 0; i < num_kthreads; i++) {
     free(kthread_info[i]->sched_ctx.uc_stack.ss_sp);
     free(kthread_info[i]);
   }
@@ -369,7 +389,7 @@ kfc_teardown(void)
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
-
+*/
 	inited = 0;
 }
 
