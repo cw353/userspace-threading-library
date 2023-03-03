@@ -24,6 +24,7 @@ static kthread_mutex_t bitvec_lock;
 static kfc_upcb_t *pcbs[KFC_MAX_THREADS]; // user thread PCBs
 static kthread_rwlock_t pcbs_lock;
 
+static kfc_upcb_t exitall;
 
 
 // shared data that doesn't need to be synchronized
@@ -163,6 +164,15 @@ ready_dequeue()
     kthread_cond_wait(&rqueue.not_empty, &rqueue.mutex);
   }
   kfc_upcb_t *pcb = queue_dequeue(&rqueue.queue);
+
+  if (pcb == &exitall) {
+  //if (pcb->tid == KFC_MAX_THREADS) {
+    DPRINTF("kthread %d received exitall\n", kthread_self());
+    kthread_mutex_unlock(&rqueue.mutex);
+    DPRINTF("kthread %d released mutex and is exiting\n", kthread_self());
+    kthread_exit();
+  }
+
   assert(pcb);
   if (queue_size(&rqueue.queue) > 0) {
     if (kthread_cond_signal(&rqueue.not_empty)) {
@@ -352,11 +362,24 @@ kfc_teardown(void)
 {
 	assert(inited);
   DPRINTF("\ncalling %s - kthread %d, tid %d\n", __func__, kthread_self(), get_kthread_pcb(kthread_self())->current_tid);
+
+  DPRINTF("enqueuing exitall\n");
+  for (int i = 0; i < num_kthreads - 1; i++) {
+    ready_enqueue(&exitall);
+  }
+
+  // join kthreads except for self
+  kthread_t self = kthread_self();
+  for (int i = 0; i < num_kthreads; i++) {
+    if (kthread_info[i]->ktid != self) {
+      kthread_join(kthread_info[i]->ktid, NULL);
+    }
+  }
   
   // destroy ready queue and its synchronization constructs
+  while (kthread_mutex_destroy(&rqueue.mutex) == EBUSY);
+  while (kthread_cond_destroy(&rqueue.not_empty) == EBUSY);
   queue_destroy(&rqueue.queue);
-  kthread_mutex_destroy(&rqueue.mutex);
-  kthread_cond_destroy(&rqueue.not_empty);
 
   // destroy bitvector and its synchronization constructs
   bitvec_destroy(&bitvec);
@@ -365,18 +388,13 @@ kfc_teardown(void)
   // destroy other synchronization constructs
   kthread_rwlock_destroy(&pcbs_lock);
 
-  // free zombie threads
+  // free zombie threads (exclude KFC_TID_MAIN)
   for (int i = KFC_TID_MAIN + 1; i < KFC_MAX_THREADS; i++) {
     if (pcbs[i]) {
       destroy_thread(i);
     }
   }
 
-  // join kthreads
-  for (int i = 0; i < num_kthreads; i++) {
-    kthread_join(kthread_info[i]->ktid, NULL);
-  }
-  
   // free kthread_info
   for (int i = 0; i < num_kthreads; i++) {
     free(kthread_info[i]->sched_ctx.uc_stack.ss_sp);
