@@ -135,7 +135,7 @@ void reclaim_tid(tid_t tid)
 void
 ready_enqueue(kfc_upcb_t *pcb)
 {
-  if (kthread_mutex_lock(&rqueue.mutex)) {
+  if (kthread_mutex_lock(&rqueue.lock)) {
     perror("ready_enqueue (kthread_mutex_lock)");
     abort();
   }
@@ -143,12 +143,12 @@ ready_enqueue(kfc_upcb_t *pcb)
     perror("ready_enqueue (queue_enqueue)");
     abort();
   }
-  if (kthread_mutex_unlock(&rqueue.mutex)) {
+  if (kthread_mutex_unlock(&rqueue.lock)) {
     perror("ready_enqueue (kthread_mutex_unlock)");
     abort();
   }
-  if (kthread_cond_signal(&rqueue.not_empty)) {
-    perror("ready_enqueue (kthread_cond_signal)");
+  if (kthread_sem_post(&rqueue.not_empty)) {
+    perror("ready_enqueue (kthread_sem_post)");
     abort();
   }
 }
@@ -156,34 +156,30 @@ ready_enqueue(kfc_upcb_t *pcb)
 kfc_upcb_t *
 ready_dequeue()
 {
-  if (kthread_mutex_lock(&rqueue.mutex)) {
+  if (kthread_sem_wait(&rqueue.not_empty)) {
+    perror("ready_dequeue (kthread_sem_wait)");
+    abort();
+  }
+
+  if (kthread_mutex_lock(&rqueue.lock)) {
     perror("ready_dequeue (kthread_mutex_lock)");
     abort();
   }
-  while (queue_size(&rqueue.queue) == 0) {
-    kthread_cond_wait(&rqueue.not_empty, &rqueue.mutex);
-  }
+
+  assert(queue_size(&rqueue.queue) > 0);
   kfc_upcb_t *pcb = queue_dequeue(&rqueue.queue);
+  assert(pcb);
+
+  if (kthread_mutex_unlock(&rqueue.lock)) {
+    perror("ready_dequeue (kthread_mutex_lock)");
+    abort();
+  }
 
   if (pcb == &exitall) {
-  //if (pcb->tid == KFC_MAX_THREADS) {
-    DPRINTF("kthread %d received exitall\n", kthread_self());
-    kthread_mutex_unlock(&rqueue.mutex);
-    DPRINTF("kthread %d released mutex and is exiting\n", kthread_self());
+    DPRINTF("kthread %d received exitall and is exiting\n", kthread_self());
     kthread_exit();
   }
 
-  assert(pcb);
-  if (queue_size(&rqueue.queue) > 0) {
-    if (kthread_cond_signal(&rqueue.not_empty)) {
-      perror("ready_dequeue (kthread_cond_signal)");
-      abort();
-    }
-  }
-  if (kthread_mutex_unlock(&rqueue.mutex)) {
-    perror("ready_dequeue (kthread_mutex_unlock)");
-    abort();
-  }
   return pcb;
 }
 
@@ -277,12 +273,12 @@ kfc_init(int kthreads, int quantum_us)
     perror ("kfc_init (queue_init)");
     abort();
   }
-  if (kthread_mutex_init(&rqueue.mutex)) {
+  if (kthread_mutex_init(&rqueue.lock)) {
     perror("kfc_init (kthread_mutex_init)");
     abort();
   }
-  if (kthread_cond_init(&rqueue.not_empty)) {
-    perror("kfc_init (kthread_cond_init)");
+  if (kthread_sem_init(&rqueue.not_empty, 0)) {
+    perror("kfc_init (kthread_sem_init)");
     abort();
   }
 
@@ -377,8 +373,11 @@ kfc_teardown(void)
   }
   
   // destroy ready queue and its synchronization constructs
-  while (kthread_mutex_destroy(&rqueue.mutex) == EBUSY);
-  while (kthread_cond_destroy(&rqueue.not_empty) == EBUSY);
+  while (kthread_mutex_destroy(&rqueue.lock) == EBUSY);
+  do {
+    errno = 0;
+    kthread_sem_destroy(&rqueue.not_empty);
+  } while (errno != 0);
   queue_destroy(&rqueue.queue);
 
   // destroy bitvector and its synchronization constructs
@@ -625,7 +624,7 @@ kfc_yield(void)
   ready_enqueue(pcb);
   
   // save caller state and swap to scheduler
-  if (swapcontext(&pcb->ctx, get_sched_ctx())) {
+  if ((errno = swapcontext(&pcb->ctx, get_sched_ctx()))) {
     perror("kfc_yield (swapcontext)");
     abort();
   }
