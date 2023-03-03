@@ -22,9 +22,9 @@
 typedef unsigned int tid_t;
 
 typedef struct {
-  sig_atomic_t counter;
+  int counter;
   queue_t queue;
-  kthread_mutex_t queue_lock;
+  kthread_mutex_t lock;
 } kfc_sem_t;
 
 enum thread_state {
