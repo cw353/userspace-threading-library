@@ -53,7 +53,8 @@ get_current_tid()
 ucontext_t *
 get_sched_ctx()
 {
-  return &get_kthread_pcb(kthread_self())->sched_ctx;
+  kfc_kinfo_t *kinfo = get_kthread_pcb(kthread_self());
+  return &kinfo->sched_ctx;
 }
 
 void *
@@ -382,10 +383,10 @@ kfc_teardown(void)
 
   // destroy bitvector and its synchronization constructs
   bitvec_destroy(&bitvec);
-  kthread_mutex_destroy(&bitvec_lock);
+  while (kthread_mutex_destroy(&bitvec_lock) == EBUSY);
 
   // destroy other synchronization constructs
-  kthread_rwlock_destroy(&pcbs_lock);
+  while (kthread_rwlock_destroy(&pcbs_lock) == EBUSY);
 
   // free zombie threads (exclude KFC_TID_MAIN)
   for (int i = KFC_TID_MAIN + 1; i < KFC_MAX_THREADS; i++) {
@@ -643,12 +644,16 @@ kfc_sem_init(kfc_sem_t *sem, int value)
 {
 	assert(inited);
 
-  int ret;
   sem->counter = value;
-  if ((ret = kthread_mutex_init(&sem->lock))) {
-    return ret;
+  if ((errno = kthread_mutex_init(&sem->lock))) {
+    perror("kfc_sem_init (kthread_mutex_init)");
+    abort();
   }
-  return queue_init(&sem->queue);
+  if (queue_init(&sem->queue)) {
+    perror("kfc_sem_init (queue_init)");
+    abort();
+  }
+  return 0;
 }
 
 /**
@@ -664,7 +669,10 @@ kfc_sem_post(kfc_sem_t *sem)
 {
 	assert(inited);
 
-  kthread_mutex_lock(&sem->lock);
+  if (kthread_mutex_lock(&sem->lock)) {
+    perror("kfc_sem_post (kthread_mutex_lock)");
+    abort();
+  }
 
   // increase counter
   sem->counter++;
@@ -674,7 +682,10 @@ kfc_sem_post(kfc_sem_t *sem)
 
     kfc_upcb_t *pcb = queue_dequeue(&sem->queue);
 
-    kthread_mutex_unlock(&sem->lock);
+    if (kthread_mutex_unlock(&sem->lock)) {
+      perror("kfc_sem_post (kthread_mutex_unlock)");
+      abort();
+    }
 
     pcbs_wrlock();
 
@@ -686,7 +697,10 @@ kfc_sem_post(kfc_sem_t *sem)
     
     ready_enqueue(pcb);
   } else {
-    kthread_mutex_unlock(&sem->lock);
+    if (kthread_mutex_unlock(&sem->lock)) {
+      perror("kfc_sem_post (kthread_mutex_unlock)");
+      abort();
+    }
   }
 	return 0;
 }
@@ -705,7 +719,10 @@ kfc_sem_wait(kfc_sem_t *sem)
 {
 	assert(inited);
 
-  kthread_mutex_lock(&sem->lock);
+  if (kthread_mutex_lock(&sem->lock)) {
+    perror("kfc_sem_wait (kthread_mutex_lock)");
+    abort();
+  }
 
   assert(sem->counter >= 0);
 
@@ -725,7 +742,10 @@ kfc_sem_wait(kfc_sem_t *sem)
       abort();
     }
 
-    kthread_mutex_unlock(&sem->lock);
+    if (kthread_mutex_unlock(&sem->lock)) {
+      perror("kfc_sem_wait (kthread_mutex_unlock)");
+      abort();
+    }
 
     // block by saving caller state and swapping to scheduler
     if (swapcontext(&pcb->ctx, get_sched_ctx())) {
@@ -734,14 +754,20 @@ kfc_sem_wait(kfc_sem_t *sem)
     }
 
     // reacquire lock after this context is resumed
-    kthread_mutex_lock(&sem->lock);
+    if (kthread_mutex_lock(&sem->lock)) {
+      perror("kfc_sem_wait (kthread_mutex_lock)");
+      abort();
+    }
   }
 
   // decrement the counter once it is above 0
   assert(sem->counter > 0);
   sem->counter--;
 
-  kthread_mutex_unlock(&sem->lock);
+  if (kthread_mutex_unlock(&sem->lock)) {
+    perror("kfc_sem_wait (kthread_mutex_unlock)");
+    abort();
+  }
 
 	return 0;
 }
@@ -759,5 +785,6 @@ kfc_sem_destroy(kfc_sem_t *sem)
   queue_destroy(&sem->queue);
   if (kthread_mutex_destroy(&sem->lock)) {
     perror("kthread_mutex_destroy\n");
+    abort();
   }
 }
