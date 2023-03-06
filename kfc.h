@@ -35,6 +35,13 @@ enum thread_state {
   FINISHED,
 };
 
+enum sched_task {
+  NONE,
+  SEM_WAIT,
+  JOIN,
+  YIELD,
+};
+
 typedef struct {
   tid_t tid;
   char stack_allocated; // if stack was allocated by kfc
@@ -45,17 +52,21 @@ typedef struct {
 } kfc_pcb_t;
 
 typedef struct {
+  enum sched_task task;
+  kfc_sem_t *task_sem;
+  ucontext_t sched_ctx;
+} kfc_ksched_t;
+
+typedef struct {
   int ktid;
   int current_tid;
-  ucontext_t sched_ctx;
+  kfc_ksched_t sched_info;
 } kfc_kinfo_t;
 
 struct ready_queue {
   queue_t queue;
   kthread_sem_t not_empty;
   kthread_mutex_t lock;
-  //kthread_mutex_t mutex;
-  //kthread_cond_t not_empty;
 };
 
 /**************************

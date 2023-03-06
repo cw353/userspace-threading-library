@@ -54,7 +54,7 @@ ucontext_t *
 get_sched_ctx()
 {
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-  return &kinfo->sched_ctx;
+  return &kinfo->sched_info.sched_ctx;
 }
 
 void *
@@ -300,15 +300,17 @@ kfc_init(int kthreads, int quantum_us)
     kthread_info[i]->ktid = i == 0 ? kthread_self() : -1;
     // assign current user tid
     kthread_info[i]->current_tid = i == 0 ? KFC_TID_MAIN : -1;
-    // make scheduler context
-    if (getcontext(&kthread_info[i]->sched_ctx)) {
+    // initialize scheduler info
+    kthread_info[i]->sched_info.task = NONE;
+    kthread_info[i]->sched_info.task_sem = NULL;
+    if (getcontext(&kthread_info[i]->sched_info.sched_ctx)) {
       perror("kfc_init (getcontext)");
       abort();
     }
-    kthread_info[i]->sched_ctx.uc_link = &pcbs[KFC_TID_MAIN]->ctx; // XXX ?
-    allocate_stack(&kthread_info[i]->sched_ctx.uc_stack, NULL, 0);
+    kthread_info[i]->sched_info.sched_ctx.uc_link = &pcbs[KFC_TID_MAIN]->ctx; // XXX ?
+    allocate_stack(&kthread_info[i]->sched_info.sched_ctx.uc_stack, NULL, 0);
     errno = 0;
-    makecontext(&kthread_info[i]->sched_ctx, (void (*)(void)) schedule, 0);
+    makecontext(&kthread_info[i]->sched_info.sched_ctx, (void (*)(void)) schedule, 0);
     if (errno != 0) {
       perror("kfc_init (makecontext)");
       abort();
@@ -397,7 +399,7 @@ kfc_teardown(void)
 
   // free kthread_info
   for (int i = 0; i < num_kthreads; i++) {
-    free(kthread_info[i]->sched_ctx.uc_stack.ss_sp);
+    free(kthread_info[i]->sched_info.sched_ctx.uc_stack.ss_sp);
     free(kthread_info[i]);
   }
   free(kthread_info);
