@@ -54,6 +54,7 @@ typedef struct {
 typedef struct {
   enum sched_task task;
   kfc_sem_t *task_sem;
+  int task_target; // tid of target thread (-1 if none)
   ucontext_t sched_ctx;
 } kfc_ksched_t;
 
