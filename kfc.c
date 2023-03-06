@@ -24,6 +24,8 @@ static kthread_mutex_t bitvec_lock;
 static kfc_pcb_t *pcbs[KFC_MAX_THREADS]; // user thread PCBs
 static kthread_rwlock_t pcbs_lock;
 
+static ucontext_t abort_ctx;
+
 static kfc_pcb_t exitall;
 
 
@@ -291,6 +293,21 @@ kfc_init(int kthreads, int quantum_us)
   pcbs[tid]->state = RUNNING;
   pcbs[tid]->join_tid = -1;
 
+  // initialize abort_ctx
+  if (getcontext(&abort_ctx)) {
+    perror("kfc_init (getcontext)");
+    abort();
+  }
+  abort_ctx.uc_link = NULL;
+  allocate_stack(&abort_ctx.uc_stack, NULL, 0);
+  errno = 0;
+  makecontext(&abort_ctx, (void (*)(void)) abort, 0);
+  if (errno != 0) {
+    perror("kfc_init (makecontext)");
+    abort();
+  }
+
+
   // initialize kthread_info
   kthread_info = malloc(num_kthreads * sizeof(kfc_kinfo_t *));
 
@@ -307,7 +324,8 @@ kfc_init(int kthreads, int quantum_us)
       perror("kfc_init (getcontext)");
       abort();
     }
-    kthread_info[i]->sched_info.sched_ctx.uc_link = &pcbs[KFC_TID_MAIN]->ctx; // XXX ?
+    // successor context should never be reached (it aborts the program)
+    kthread_info[i]->sched_info.sched_ctx.uc_link = &abort_ctx;
     allocate_stack(&kthread_info[i]->sched_info.sched_ctx.uc_stack, NULL, 0);
     errno = 0;
     makecontext(&kthread_info[i]->sched_info.sched_ctx, (void (*)(void)) schedule, 0);
@@ -397,6 +415,9 @@ kfc_teardown(void)
     }
   }
 
+  // free abort_ctx
+  free(abort_ctx.uc_stack.ss_sp);
+
   // free kthread_info
   for (int i = 0; i < num_kthreads; i++) {
     free(kthread_info[i]->sched_info.sched_ctx.uc_stack.ss_sp);
@@ -472,8 +493,8 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   allocate_stack(&pcbs[new_tid]->ctx.uc_stack, stack_base, stack_size);
   pcbs[new_tid]->stack_allocated = stack_base ? 0 : 1;
 
-  // set scheduler as successor context
-  //pcbs[new_tid]->ctx.uc_link = &sched_ctx;
+  // successor context should never be reached (it aborts the program)
+  pcbs[new_tid]->ctx.uc_link = &abort_ctx;
   
   // makecontext
   errno = 0;
