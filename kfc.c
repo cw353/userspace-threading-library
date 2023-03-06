@@ -191,6 +191,30 @@ ready_dequeue()
  */
 void schedule()
 {
+  
+  kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+  switch(kinfo->sched_info.task) {
+    case NONE:
+      break;
+    case YIELD:
+      pcbs_wrlock();
+      kfc_pcb_t *pcb = pcbs[get_current_tid()];
+      assert(pcb->state == RUNNING);
+      pcb->state = READY;
+      pcbs_unlock();
+      ready_enqueue(pcb);
+      break;
+    case JOIN:
+      break;
+    case SEM_WAIT:
+      break;
+    default:
+      perror("schedule: invalid task");
+      abort();
+      break;
+  }
+  kinfo->sched_info.task = NONE;
+
   // get next thread from ready queue (fcfs)
   kfc_pcb_t *next_pcb = ready_dequeue();
 
@@ -636,16 +660,15 @@ kfc_yield(void)
 {
 	assert(inited);
 
-  pcbs_wrlock();
-  
-  // enqueue calling thread
+  // let scheduler know that the current user thread has requested to yield
+  kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+  assert(kinfo->sched_info.task == NONE);
+  assert(kinfo->sched_info.task_sem == NULL);
+  kinfo->sched_info.task = YIELD;
+
+  pcbs_rdlock();
   kfc_pcb_t *pcb = pcbs[get_current_tid()];
-  assert(pcb->state == RUNNING);
-  pcb->state = READY;
-
   pcbs_unlock();
-
-  ready_enqueue(pcb);
   
   // save caller state and swap to scheduler
   if ((errno = swapcontext(&pcb->ctx, get_sched_ctx()))) {
