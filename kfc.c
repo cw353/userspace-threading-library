@@ -62,9 +62,7 @@ get_sched_ctx()
 void *
 kthread_func(void *arg)
 {
-  //DPRINTF("kthread %d started waiting for inited_sem\n", kthread_self());
   kthread_sem_wait(&inited_sem);
-  //DPRINTF("kthread %d finished waiting for inited_sem\n", kthread_self());
 
   if (setcontext(get_sched_ctx())) {
     perror("kfc_exit (setcontext)");
@@ -179,7 +177,6 @@ ready_dequeue()
   }
 
   if (pcb == &exitall) {
-    //DPRINTF("kthread %d received exitall and is exiting\n", kthread_self());
     kthread_exit();
   }
 
@@ -198,6 +195,8 @@ void schedule()
 	kfc_pcb_t *current_pcb = current_tid > -1 ? pcbs[current_tid] : NULL;
 	kfc_sem_t *sem = kinfo->sched_info.task_sem;
 
+	assert(kthread_self() == kinfo->ktid);
+
   switch(kinfo->sched_info.task) {
     case NONE:
       break;
@@ -209,6 +208,25 @@ void schedule()
       pcbs_unlock();
       ready_enqueue(current_pcb);
       break;
+		case EXIT:
+			assert(current_pcb);
+			pcbs_wrlock();
+
+			assert(current_pcb->state == RUNNING);
+			current_pcb->state = FINISHED;
+
+			// if another thread is waiting to join on this thread,
+			// return it to the ready queue
+			int join_tid = current_pcb->join_tid;
+			if (join_tid >= 0) {
+				assert(join_tid != current_tid);
+				assert(pcbs[join_tid]->state == WAITING_JOIN);
+				pcbs[join_tid]->state = READY;
+				current_pcb->join_tid = -1;
+				ready_enqueue(pcbs[join_tid]);
+			}
+			pcbs_unlock();
+			break;
     case JOIN:
 			assert(current_pcb);
       pcbs_wrlock();
@@ -219,6 +237,7 @@ void schedule()
 			if (target_pcb->state != FINISHED) {
 				// if target thread isn't finished, indicate that current thread
 				// is waiting to join on it
+				assert(target_pcb->join_tid == -1);
         target_pcb->join_tid = (int) current_tid;
         current_pcb->state = WAITING_JOIN;
       } else {
@@ -226,6 +245,7 @@ void schedule()
 				// after the current thread ran the latest swapcontext call in kfc_join()),
 				// update both current thread's and target thread's state and return current
 				// thread to the ready queue
+				assert(target_pcb->join_tid == -1);
 				current_pcb->state = READY;
 				target_pcb->join_tid = -1;
 				ready_enqueue(current_pcb);
@@ -266,6 +286,8 @@ void schedule()
       break;
   }
   kinfo->sched_info.task = NONE;
+	assert(kinfo->sched_info.task_sem == NULL);
+	assert(kinfo->sched_info.task_target == -1);
 
   // get next thread from ready queue (fcfs)
   kfc_pcb_t *next_pcb = ready_dequeue();
@@ -455,9 +477,7 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
-  //DPRINTF("\ncalling %s - kthread %d, tid %d\n", __func__, kthread_self(), get_kthread_info(kthread_self())->current_tid);
 
-  //DPRINTF("enqueuing exitall\n");
   for (int i = 0; i < num_kthreads - 1; i++) {
     ready_enqueue(&exitall);
   }
@@ -603,25 +623,20 @@ kfc_exit(void *ret)
   // update thread state and save return value
   pcbs_wrlock();
 
-  tid_t current_tid = get_current_tid();
+  /*tid_t current_tid = get_current_tid();
   assert(pcbs[current_tid]->state == RUNNING);
-  pcbs[current_tid]->state = FINISHED;
-  pcbs[current_tid]->retval = ret;
-  
-  // if another thread is waiting to join on this thread,
-  // return it to the ready queue
-  int join_tid = pcbs[current_tid]->join_tid;
-  if (join_tid >= 0) {
-    assert(join_tid != current_tid);
-    assert(pcbs[join_tid]->state == WAITING_JOIN);
-    pcbs[join_tid]->state = READY;
-    ready_enqueue(pcbs[join_tid]);
-    // no thread waiting to join on this thread any more
-    pcbs[current_tid]->join_tid = -1;
-  }
+  pcbs[current_tid]->state = FINISHED;*/
+  pcbs[get_current_tid()]->retval = ret;
 
   pcbs_unlock();
 
+  // let scheduler know that the current user thread has requested to yield
+  kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+  assert(kinfo->sched_info.task == NONE);
+  assert(kinfo->sched_info.task_sem == NULL);
+  assert(kinfo->sched_info.task_target == -1);
+  kinfo->sched_info.task = EXIT;
+  
   // ask scheduler to schedule next thread
   if (setcontext(get_sched_ctx())) {
     perror("kfc_exit (setcontext)");
@@ -654,13 +669,15 @@ kfc_join(tid_t tid, void **pret)
   // Block if the target thread is not finished yet
   if (target_pcb->state != FINISHED) {
 		
+		assert(target_pcb->join_tid == -1);
   	// let scheduler know that the current user thread has requested to join
   	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		assert(kinfo->sched_info.task == NONE);
 		assert(kinfo->sched_info.task_sem == NULL);
 		assert(kinfo->sched_info.task_target == -1);
 		kinfo->sched_info.task = JOIN;
-		kinfo->sched_info.task_target = tid;
+		assert(((int) tid) >= 0);
+		kinfo->sched_info.task_target = (int) tid;
 
     // block by saving caller state and swapping to scheduler
     if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {

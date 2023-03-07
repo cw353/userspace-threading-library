@@ -37,9 +37,10 @@ enum thread_state {
 
 enum sched_task {
   NONE,
-  SEM_WAIT,
-  JOIN,
   YIELD,
+	EXIT,
+  JOIN,
+  SEM_WAIT,
 };
 
 typedef struct {
