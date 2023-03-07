@@ -193,24 +193,28 @@ void schedule()
 {
   
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	//tid_t current_tid = kinfo->current_tid;
+	int current_tid = get_current_tid();
+	kfc_pcb_t *current_pcb = current_tid > -1 ? pcbs[current_tid] : NULL;
+	kfc_sem_t *sem = kinfo->sched_info.task_sem;
+
   switch(kinfo->sched_info.task) {
     case NONE:
       break;
     case YIELD:
+			assert(current_pcb);
       pcbs_wrlock();
-      kfc_pcb_t *pcb = pcbs[get_current_tid()];
-      assert(pcb->state == RUNNING);
-      pcb->state = READY;
+      assert(current_pcb->state == RUNNING);
+      current_pcb->state = READY;
       pcbs_unlock();
-      ready_enqueue(pcb);
+      ready_enqueue(current_pcb);
       break;
     case JOIN:
+			assert(current_pcb);
       pcbs_wrlock();
-      tid_t current_tid = get_current_tid();
       int target_tid = kinfo->sched_info.task_target;
       assert(target_tid > -1);
 			assert(target_tid != current_tid);
-      kfc_pcb_t *current_pcb = pcbs[current_tid];
       kfc_pcb_t *target_pcb = pcbs[target_tid];
 			if (target_pcb->state != FINISHED) {
 				// if target thread isn't finished, indicate that current thread
@@ -222,8 +226,6 @@ void schedule()
 				// after the current thread ran the latest swapcontext call in kfc_join()),
 				// update both current thread's and target thread's state and return current
 				// thread to the ready queue
-				assert(target_pcb->join_tid == current_tid);
-    		assert(current_pcb->state == WAITING_JOIN);
 				current_pcb->state = READY;
 				target_pcb->join_tid = -1;
 				ready_enqueue(current_pcb);
@@ -232,6 +234,31 @@ void schedule()
       kinfo->sched_info.task_target = -1;
       break;
     case SEM_WAIT:
+			assert(current_pcb);
+			assert(sem);
+			if (kthread_mutex_lock(&sem->lock)) {
+				perror("schedule (kthread_mutex_lock)");
+				abort();
+			}
+			assert(sem->counter >= 0);
+			pcbs_wrlock();
+			if (sem->counter == 0) {
+				// add current pcb to sem waiting queue
+				current_pcb->state = WAITING_SEM;
+				if (queue_enqueue(&sem->queue, current_pcb)) {
+					perror("schedule (queue_enqueue)");
+					abort();
+				}
+			} else {
+				current_pcb->state = READY;
+				ready_enqueue(current_pcb);
+			}
+			pcbs_unlock();
+			if (kthread_mutex_unlock(&sem->lock)) {
+				perror("schedule (kthread_mutex_unlock)");
+				abort();
+			}
+			kinfo->sched_info.task_sem = NULL;
       break;
     default:
       perror("schedule: invalid task");
@@ -799,17 +826,12 @@ kfc_sem_wait(kfc_sem_t *sem)
   while (sem->counter == 0) {
     // add to semaphore queue
 
-    pcbs_wrlock();
-
-    kfc_pcb_t *pcb = pcbs[get_current_tid()];
-    pcb->state = WAITING_SEM;
-
-    pcbs_unlock();
-    
-    if (queue_enqueue(&sem->queue, pcb)) {
-      perror("kfc_sem_wait (queue_enqueue)");
-      abort();
-    }
+		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+		assert(kinfo->sched_info.task == NONE);
+		assert(kinfo->sched_info.task_sem == NULL);
+		assert(kinfo->sched_info.task_target == -1);
+		kinfo->sched_info.task = SEM_WAIT;
+		kinfo->sched_info.task_sem = sem;
 
     if (kthread_mutex_unlock(&sem->lock)) {
       perror("kfc_sem_wait (kthread_mutex_unlock)");
@@ -817,7 +839,7 @@ kfc_sem_wait(kfc_sem_t *sem)
     }
 
     // block by saving caller state and swapping to scheduler
-    if (swapcontext(&pcb->ctx, get_sched_ctx())) {
+    if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
       perror("kfc_sem_wait (swapcontext)");
       abort();
     }
