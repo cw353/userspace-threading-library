@@ -1,0 +1,5 @@
+Current errors:
+* test-m2m-pc occasionally hits 99999 checkpoints instead of 100000
+* running test-m2m with memcheck reveals invalid memory accesses associated with teardown
+* running test-m2m and test-m2m-pc with memcheck reveals lost memory (caused by not joining the pthread that is itself running kfc_teardown?)
+
