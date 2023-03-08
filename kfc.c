@@ -738,7 +738,7 @@ kfc_yield(void)
   kfc_pcb_t *pcb = pcbs[get_current_tid()];
   
   // save caller state and swap to scheduler
-  if ((errno = swapcontext(&pcb->ctx, get_sched_ctx()))) {
+  if (swapcontext(&pcb->ctx, get_sched_ctx())) {
     perror("kfc_yield (swapcontext)");
     abort();
   }
