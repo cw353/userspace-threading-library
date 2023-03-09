@@ -176,10 +176,6 @@ ready_dequeue()
     abort();
   }
 
-  if (pcb == &exitall) {
-    kthread_exit();
-  }
-
   return pcb;
 }
 
@@ -291,6 +287,10 @@ void schedule()
 
   // get next thread from ready queue (fcfs)
   kfc_pcb_t *next_pcb = ready_dequeue();
+
+  if (next_pcb == &exitall) {
+    kthread_exit();
+  }
 
   pcbs_wrlock();
 
