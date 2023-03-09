@@ -41,6 +41,7 @@ enum sched_task {
 	EXIT,
   JOIN,
   SEM_WAIT,
+	TEARDOWN,
 };
 
 typedef struct {

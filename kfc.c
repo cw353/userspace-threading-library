@@ -15,6 +15,7 @@ static int inited = 0;
 
 // synchronized shared data
 static kthread_sem_t inited_sem;
+static kthread_sem_t exitall_sem;
 
 static struct ready_queue rqueue;
 
@@ -32,6 +33,7 @@ static kfc_pcb_t exitall;
 // shared data that doesn't need to be synchronized
 static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
+static unsigned int MAIN_KTHREAD_INDEX = 0;
 
 kfc_kinfo_t *
 get_kthread_info(kthread_t ktid)
@@ -279,6 +281,10 @@ void schedule()
 			}
 			kinfo->sched_info.task_sem = NULL;
       break;
+		case TEARDOWN:
+			current_pcb->state = READY;
+			ready_enqueue(current_pcb);
+			break;
     default:
       perror("schedule: invalid task");
       abort();
@@ -292,7 +298,20 @@ void schedule()
   kfc_pcb_t *next_pcb = ready_dequeue();
 
   if (next_pcb == &exitall) {
-    kthread_exit();
+		if (kthread_self() == kthread_info[MAIN_KTHREAD_INDEX]->ktid) {
+			DPRINTF("main kthread %d received exitall and is waiting on exitall_sem\n", kthread_self());
+			for (int i = 0; i < num_kthreads-1; i++) {
+				if (kthread_sem_wait(&exitall_sem)) {
+					perror("schedule (kthread_sem_wait)");
+					abort();
+				}
+			}
+			schedule();
+		} else {
+			DPRINTF("kthread %d received exitall and is exiting\n", kthread_self());
+			kthread_sem_post(&exitall_sem);
+			kthread_exit();
+		}
   }
 
   pcbs_wrlock();
@@ -353,6 +372,11 @@ kfc_init(int kthreads, int quantum_us)
   num_kthreads = kthreads;
   if (kthread_sem_init(&inited_sem, 0)) {
     perror("kthread_sem_init");
+    abort();
+  }
+
+  if (kthread_sem_init(&exitall_sem, 0)) {
+		perror("kthread_sem_init");
     abort();
   }
 
@@ -437,8 +461,8 @@ kfc_init(int kthreads, int quantum_us)
     }
   }
 
-  // create kthreads
-  for (int i = 1; i < num_kthreads; i++) {
+  // create other kthreads
+  for (int i = MAIN_KTHREAD_INDEX+1; i < num_kthreads; i++) {
     if (kthread_create(&kthread_info[i]->ktid, kthread_func, NULL)) {
       perror("kfc_init (kthread_create)");
       abort();
@@ -481,16 +505,31 @@ kfc_teardown(void)
 {
 	assert(inited);
 
-  for (int i = 0; i < num_kthreads - 1; i++) {
+	DPRINTF("kthread %d is starting teardown\n", kthread_self());
+  for (int i = 0; i < num_kthreads; i++) {
     ready_enqueue(&exitall);
   }
+	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	assert(kinfo->sched_info.task == NONE);
+	assert(kinfo->sched_info.task_sem == NULL);
+	assert(kinfo->sched_info.task_target == -1);
+	kinfo->sched_info.task = TEARDOWN;
+	// block by saving caller state and swapping to scheduler
+	if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
+		perror("kfc_join (swapcontext)");
+		abort();
+	}
 
-  // join kthreads except for self
-  kthread_t self = kthread_self();
-  for (int i = 0; i < num_kthreads; i++) {
-    if (kthread_info[i]->ktid != self) {
-      kthread_join(kthread_info[i]->ktid, NULL);
-    }
+	assert(inited);
+
+	kthread_t self = kthread_self();
+	assert(self == kthread_info[MAIN_KTHREAD_INDEX]->ktid);
+	DPRINTF("main kthread %d is continuing teardown\n", self);
+
+  // join kthreads except for "main" kthread
+  for (int i = MAIN_KTHREAD_INDEX+1; i < num_kthreads; i++) {
+		assert(kthread_info[i]->ktid != self);
+		kthread_join(kthread_info[i]->ktid, NULL);
   }
   
   // destroy ready queue and its synchronization constructs
@@ -526,6 +565,11 @@ kfc_teardown(void)
   free(kthread_info);
 
   if (kthread_sem_destroy(&inited_sem)) {
+    perror("kthread_sem_destroy");
+    abort();
+  }
+
+  if (kthread_sem_destroy(&exitall_sem)) {
     perror("kthread_sem_destroy");
     abort();
   }
