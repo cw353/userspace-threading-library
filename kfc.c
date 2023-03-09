@@ -62,7 +62,10 @@ get_sched_ctx()
 void *
 kthread_func(void *arg)
 {
-  kthread_sem_wait(&inited_sem);
+  if (kthread_sem_wait(&inited_sem)) {
+		perror("kthread_func (kthread_sem_wait)");
+		abort();
+	}
 
   if (setcontext(get_sched_ctx())) {
     perror("kfc_exit (setcontext)");
