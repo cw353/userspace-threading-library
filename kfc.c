@@ -713,10 +713,15 @@ kfc_join(tid_t tid, void **pret)
   kfc_pcb_t *current_pcb = pcbs[current_tid];
   kfc_pcb_t *target_pcb = pcbs[tid]; 
 
+	pcbs_rdlock();
+
   // Block if the target thread is not finished yet
   if (target_pcb->state != FINISHED) {
 		
 		assert(target_pcb->join_tid == -1);
+
+		pcbs_unlock();
+
   	// let scheduler know that the current user thread has requested to join
   	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		assert(kinfo->sched_info.task == NONE);
@@ -731,9 +736,10 @@ kfc_join(tid_t tid, void **pret)
       perror("kfc_join (swapcontext)");
       abort();
     }
-  }
 
-  pcbs_rdlock();
+		// reaquire readlock
+		pcbs_rdlock();
+  }
 
   // continue once the target thread has finished
   assert(pcbs[tid]->state == FINISHED);
