@@ -218,13 +218,13 @@ void schedule()
 
 			// if another thread is waiting to join on this thread,
 			// return it to the ready queue
-			int join_tid = current_pcb->join_tid;
-			if (join_tid >= 0) {
-				assert(join_tid != current_tid);
-				assert(pcbs[join_tid]->state == WAITING_JOIN);
-				pcbs[join_tid]->state = READY;
-				current_pcb->join_tid = -1;
-				ready_enqueue(pcbs[join_tid]);
+			if (queue_size(&current_pcb->join_queue) > 0) {
+				kfc_pcb_t *join_pcb = queue_dequeue(&current_pcb->join_queue);
+				assert(join_pcb);
+				assert(join_pcb->tid != current_tid);
+				assert(join_pcb->state == WAITING_JOIN);
+				join_pcb->state = READY;
+				ready_enqueue(join_pcb);
 			}
 			pcbs_unlock();
 			break;
@@ -238,17 +238,19 @@ void schedule()
 			if (target_pcb->state != FINISHED) {
 				// if target thread isn't finished, indicate that current thread
 				// is waiting to join on it
-				assert(target_pcb->join_tid == -1);
-        target_pcb->join_tid = (int) current_tid;
+				assert(queue_size(&target_pcb->join_queue) == 0);
+				if (queue_enqueue(&target_pcb->join_queue, current_pcb)) {
+					perror("schedule (queue_enqueue)");
+					abort();
+				}
         current_pcb->state = WAITING_JOIN;
       } else {
 				// if target thread has finished (i.e. the target thread ran kfc_exit()
 				// after the current thread ran the latest swapcontext call in kfc_join()),
 				// update both current thread's and target thread's state and return current
 				// thread to the ready queue
-				assert(target_pcb->join_tid == -1);
+				assert(queue_size(&target_pcb->join_queue) == 0);
 				current_pcb->state = READY;
-				target_pcb->join_tid = -1;
 				ready_enqueue(current_pcb);
 			}
       pcbs_unlock();
@@ -416,7 +418,10 @@ kfc_init(int kthreads, int quantum_us)
   pcbs[tid]->stack_allocated = 0;
   pcbs[tid]->tid = tid;
   pcbs[tid]->state = RUNNING;
-  pcbs[tid]->join_tid = -1;
+  if (queue_init(&pcbs[tid]->join_queue)) {
+    perror("kfc_init (queue_init)");
+    abort();
+  }
 
   // initialize abort_ctx
   if (getcontext(&abort_ctx)) {
@@ -482,6 +487,7 @@ kfc_init(int kthreads, int quantum_us)
 void
 destroy_thread(tid_t tid)
 {
+  queue_destroy(&pcbs[tid]->join_queue);
   if (pcbs[tid]->stack_allocated) {
     free(pcbs[tid]->ctx.uc_stack.ss_sp);
   }
@@ -627,7 +633,10 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   pcbs[new_tid] = malloc(sizeof(kfc_pcb_t));
   pcbs[new_tid]->tid = new_tid;
   pcbs[new_tid]->state = READY;
-  pcbs[new_tid]->join_tid = -1;
+  if (queue_init(&pcbs[new_tid]->join_queue)) {
+    perror("kfc_create (queue_init)");
+    abort();
+  }
   if (getcontext(&pcbs[new_tid]->ctx)) {
     perror("kfc_create (getcontext)");
     abort();
@@ -718,7 +727,7 @@ kfc_join(tid_t tid, void **pret)
   // Block if the target thread is not finished yet
   if (target_pcb->state != FINISHED) {
 		
-		assert(target_pcb->join_tid == -1);
+		assert(queue_size(&current_pcb->join_queue) == 0);
 
 		pcbs_unlock();
 
