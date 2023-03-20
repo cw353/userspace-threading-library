@@ -32,11 +32,4 @@ int kthread_sem_post(kthread_sem_t *sem);
 int kthread_sem_wait(kthread_sem_t *sem);
 int kthread_sem_destroy(kthread_sem_t *sem);
 
-int kthread_rwlock_init(pthread_rwlock_t *restrict rwlock,
-    const pthread_rwlockattr_t *restrict attr);
-int kthread_rwlock_destroy(pthread_rwlock_t *restrict rwlock);
-int kthread_rwlock_rdlock(pthread_rwlock_t *rwlock);
-int kthread_rwlock_wrlock(pthread_rwlock_t *rwlock);
-int kthread_rwlock_unlock(pthread_rwlock_t *rwlock);
-
 #endif
