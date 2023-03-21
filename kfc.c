@@ -195,26 +195,20 @@ void schedule()
       break;
     case YIELD:
 			assert(current_pcb);
-      lock_pcbs();
       assert(current_pcb->state == RUNNING);
       current_pcb->state = READY;
-      unlock_pcbs();
       ready_enqueue(current_pcb);
+      unlock_pcbs();
       break;
 		case EXIT:
-			assert(current_pcb);
-			lock_pcbs();
-
-			assert(current_pcb->state == RUNNING);
+			assert(current_pcb && current_pcb->state == RUNNING);
 			current_pcb->state = FINISHED;
 
 			// if another thread is waiting to join on this thread,
 			// return it to the ready queue
 			if (queue_size(&current_pcb->join_queue) > 0) {
 				kfc_pcb_t *join_pcb = queue_dequeue(&current_pcb->join_queue);
-				assert(join_pcb);
-				assert(join_pcb->tid != current_tid);
-				assert(join_pcb->state == WAITING_JOIN);
+				assert(join_pcb && join_pcb->tid != current_tid && join_pcb->state == WAITING_JOIN);
 				join_pcb->state = READY;
 				ready_enqueue(join_pcb);
 			}
@@ -278,6 +272,7 @@ void schedule()
 		case TEARDOWN:
 			current_pcb->state = READY;
 			ready_enqueue(current_pcb);
+			unlock_pcbs();
 			break;
     default:
       perror("schedule: invalid task");
@@ -285,6 +280,7 @@ void schedule()
       break;
   }
   kinfo->sched_info.task = NONE;
+	kinfo->sched_info.lock = NULL;
 	assert(kinfo->sched_info.task_sem == NULL);
 	assert(kinfo->sched_info.task_target == -1);
 
@@ -511,7 +507,10 @@ kfc_teardown(void)
 	assert(kinfo->sched_info.task == NONE);
 	assert(kinfo->sched_info.task_sem == NULL);
 	assert(kinfo->sched_info.task_target == -1);
+
 	kinfo->sched_info.task = TEARDOWN;
+	lock_pcbs();
+
 	// block by saving caller state and swapping to scheduler
 	if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
 		perror("kfc_join (swapcontext)");
@@ -671,18 +670,14 @@ kfc_exit(void *ret)
   // update thread state and save return value
   lock_pcbs();
 
-  /*tid_t current_tid = get_current_tid();
-  assert(pcbs[current_tid]->state == RUNNING);
-  pcbs[current_tid]->state = FINISHED;*/
   pcbs[get_current_tid()]->retval = ret;
-
-  unlock_pcbs();
 
   // let scheduler know that the current user thread has requested to yield
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
   assert(kinfo->sched_info.task == NONE);
   assert(kinfo->sched_info.task_sem == NULL);
   assert(kinfo->sched_info.task_target == -1);
+
   kinfo->sched_info.task = EXIT;
   
   // ask scheduler to schedule next thread
@@ -787,12 +782,12 @@ kfc_yield(void)
   assert(kinfo->sched_info.task == NONE);
   assert(kinfo->sched_info.task_sem == NULL);
   assert(kinfo->sched_info.task_target == -1);
+
+	lock_pcbs();
   kinfo->sched_info.task = YIELD;
 
-  kfc_pcb_t *pcb = pcbs[get_current_tid()];
-  
   // save caller state and swap to scheduler
-  if (swapcontext(&pcb->ctx, get_sched_ctx())) {
+  if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
     perror("kfc_yield (swapcontext)");
     abort();
   }
