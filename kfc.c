@@ -803,11 +803,6 @@ kfc_sem_post(kfc_sem_t *sem)
 
     kfc_pcb_t *pcb = queue_dequeue(&sem->queue);
 
-    if (kthread_mutex_unlock(&sem->lock)) {
-      perror("kfc_sem_post (kthread_mutex_unlock)");
-      abort();
-    }
-
     lock_pcbs();
 
     assert(pcb);
@@ -817,12 +812,11 @@ kfc_sem_post(kfc_sem_t *sem)
     unlock_pcbs();
     
     ready_enqueue(pcb);
-  } else {
-    if (kthread_mutex_unlock(&sem->lock)) {
-      perror("kfc_sem_post (kthread_mutex_unlock)");
-      abort();
-    }
-  }
+	}
+	if (kthread_mutex_unlock(&sem->lock)) {
+		perror("kfc_sem_post (kthread_mutex_unlock)");
+		abort();
+	}
 	return 0;
 }
 
