@@ -56,8 +56,6 @@ typedef struct {
 // if task is set, assume pcbs_lock is held by kthread
 typedef struct {
   enum sched_task task;
-  kfc_sem_t *task_sem;
-  int task_target; // tid of target thread (-1 if none)
   ucontext_t sched_ctx;
 	kthread_mutex_t *lock;
 	queue_t *queue;
