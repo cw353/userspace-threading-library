@@ -193,16 +193,10 @@ void schedule()
     case NONE:
       break;
     case YIELD:
-			assert(current_pcb);
-      assert(current_pcb->state == RUNNING);
-      current_pcb->state = READY;
       ready_enqueue(current_pcb);
       unlock_pcbs();
       break;
 		case EXIT:
-			assert(current_pcb && current_pcb->state == RUNNING);
-			current_pcb->state = FINISHED;
-
 			// if another thread is waiting to join on this thread,
 			// return it to the ready queue
 			if (queue_size(&current_pcb->join_queue) > 0) {
@@ -214,10 +208,6 @@ void schedule()
 			unlock_pcbs();
 			break;
     case JOIN:
-			assert(current_pcb);
-			assert(queue_size(kinfo->sched_info.queue) == 0);
-
-			current_pcb->state = WAITING_JOIN;
 			if (queue_enqueue(kinfo->sched_info.queue, current_pcb)) {
 				perror("schedule (queue_enqueue)");
 				abort();
@@ -225,10 +215,6 @@ void schedule()
       unlock_pcbs();
       break;
     case SEM_WAIT:
-			assert(current_pcb);
-			assert(kinfo->sched_info.queue && kinfo->sched_info.lock);
-
-			current_pcb->state = WAITING_SEM;
 			if (queue_enqueue(kinfo->sched_info.queue, current_pcb)) {
 				perror("schedule (queue_enqueue)");
 				abort();
@@ -473,7 +459,6 @@ kfc_teardown(void)
     ready_enqueue(&exitall);
   }
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-	assert(kinfo->sched_info.task == NONE);
 
 	kinfo->sched_info.task = TEARDOWN;
 	lock_pcbs();
@@ -637,11 +622,13 @@ kfc_exit(void *ret)
   // update thread state and save return value
   lock_pcbs();
 
-  pcbs[get_current_tid()]->retval = ret;
+	kfc_pcb_t *current_pcb = pcbs[get_current_tid()];
+  current_pcb->retval = ret;
+	assert(current_pcb->state == RUNNING);
+	current_pcb->state = FINISHED;
 
   // let scheduler know that the current user thread has requested to yield
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-  assert(kinfo->sched_info.task == NONE);
 
   kinfo->sched_info.task = EXIT;
   
@@ -683,11 +670,11 @@ kfc_join(tid_t tid, void **pret)
 
   	// let scheduler know that the current user thread has requested to join
   	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-		assert(kinfo->sched_info.task == NONE);
-		assert(kinfo->sched_info.queue == NULL);
 
 		kinfo->sched_info.task = JOIN;
 		kinfo->sched_info.queue = &target_pcb->join_queue;
+
+		current_pcb->state = WAITING_JOIN;
 
     // block by saving caller state and swapping to scheduler
     if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {
@@ -741,13 +728,15 @@ kfc_yield(void)
 
   // let scheduler know that the current user thread has requested to yield
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-  assert(kinfo->sched_info.task == NONE);
-
-	lock_pcbs();
   kinfo->sched_info.task = YIELD;
 
+	lock_pcbs();
+	kfc_pcb_t *current_pcb = pcbs[get_current_tid()];
+	assert(current_pcb->state == RUNNING);
+	current_pcb->state = READY;
+
   // save caller state and swap to scheduler
-  if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
+  if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {
     perror("kfc_yield (swapcontext)");
     abort();
   }
@@ -846,25 +835,22 @@ kfc_sem_wait(kfc_sem_t *sem)
     abort();
   }
 
+	kfc_pcb_t *current_pcb = pcbs[get_current_tid()];
+
   assert(sem->counter >= 0);
 
   // block if the counter is not above 0 (loop for when this context is resumed)
   while (sem->counter == 0) {
-    // add to semaphore queue
-
 		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-		assert(kinfo->sched_info.task == NONE);
-		assert(kinfo->sched_info.lock == NULL);
-		assert(kinfo->sched_info.queue == NULL);
-
 		kinfo->sched_info.task = SEM_WAIT;
 		kinfo->sched_info.lock = &sem->lock;
 		kinfo->sched_info.queue = &sem->queue;
 
 		lock_pcbs();
+		current_pcb->state = WAITING_SEM;
 
     // block by saving caller state and swapping to scheduler
-    if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
+    if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {
       perror("kfc_sem_wait (swapcontext)");
       abort();
     }
