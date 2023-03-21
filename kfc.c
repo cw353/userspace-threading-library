@@ -232,29 +232,20 @@ void schedule()
     case SEM_WAIT:
 			assert(current_pcb);
 			assert(sem);
-			if (kthread_mutex_lock(&sem->lock)) {
-				perror("schedule (kthread_mutex_lock)");
+			assert(kinfo->sched_info.queue && kinfo->sched_info.queue == &sem->queue);
+			assert(kinfo->sched_info.lock && kinfo->sched_info.lock == &sem->lock);
+			assert(sem->counter == 0);
+
+			current_pcb->state = WAITING_SEM;
+			if (queue_enqueue(kinfo->sched_info.queue, current_pcb)) {
+				perror("schedule (queue_enqueue)");
 				abort();
 			}
-			assert(sem->counter >= 0);
-			lock_pcbs();
-			if (sem->counter == 0) {
-				// add current pcb to sem waiting queue
-				current_pcb->state = WAITING_SEM;
-				if (queue_enqueue(&sem->queue, current_pcb)) {
-					perror("schedule (queue_enqueue)");
-					abort();
-				}
-			} else {
-				current_pcb->state = READY;
-				ready_enqueue(current_pcb);
-			}
-			unlock_pcbs();
-			if (kthread_mutex_unlock(&sem->lock)) {
+			if (kthread_mutex_unlock(kinfo->sched_info.lock)) {
 				perror("schedule (kthread_mutex_unlock)");
 				abort();
 			}
-			kinfo->sched_info.task_sem = NULL;
+			unlock_pcbs();
       break;
 		case TEARDOWN:
 			current_pcb->state = READY;
@@ -269,6 +260,7 @@ void schedule()
   kinfo->sched_info.task = NONE;
 	kinfo->sched_info.lock = NULL;
 	kinfo->sched_info.queue = NULL;
+	kinfo->sched_info.task_sem = NULL;
 	kinfo->sched_info.task_target = -1;
 	assert(kinfo->sched_info.task_sem == NULL);
 	assert(kinfo->sched_info.task_target == -1);
@@ -887,13 +879,15 @@ kfc_sem_wait(kfc_sem_t *sem)
 		assert(kinfo->sched_info.task == NONE);
 		assert(kinfo->sched_info.task_sem == NULL);
 		assert(kinfo->sched_info.task_target == -1);
+		assert(kinfo->sched_info.lock == NULL);
+		assert(kinfo->sched_info.queue == NULL);
+
 		kinfo->sched_info.task = SEM_WAIT;
 		kinfo->sched_info.task_sem = sem;
+		kinfo->sched_info.lock = &sem->lock;
+		kinfo->sched_info.queue = &sem->queue;
 
-    if (kthread_mutex_unlock(&sem->lock)) {
-      perror("kfc_sem_wait (kthread_mutex_unlock)");
-      abort();
-    }
+		lock_pcbs();
 
     // block by saving caller state and swapping to scheduler
     if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
