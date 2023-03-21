@@ -11,6 +11,8 @@
 #include "ucontext.h"
 #include "valgrind.h"
 
+static int KSEM = 0;
+
 static int inited = 0;
 
 // synchronized shared data
@@ -753,6 +755,10 @@ kfc_yield(void)
 int
 kfc_sem_init(kfc_sem_t *sem, int value)
 {
+	if (KSEM) {
+		return kthread_sem_init(&sem->ksem, value);
+	}
+
 	assert(inited);
 
   sem->counter = value;
@@ -778,6 +784,10 @@ kfc_sem_init(kfc_sem_t *sem, int value)
 int
 kfc_sem_post(kfc_sem_t *sem)
 {
+	if (KSEM) {
+		return kthread_sem_post(&sem->ksem);
+	}
+
 	assert(inited);
 
   if (kthread_mutex_lock(&sem->lock)) {
@@ -828,6 +838,9 @@ kfc_sem_post(kfc_sem_t *sem)
 int
 kfc_sem_wait(kfc_sem_t *sem)
 {
+	if (KSEM) {
+		return kthread_sem_wait(&sem->ksem);
+	}
 	assert(inited);
 
   if (kthread_mutex_lock(&sem->lock)) {
@@ -883,6 +896,10 @@ kfc_sem_wait(kfc_sem_t *sem)
 void
 kfc_sem_destroy(kfc_sem_t *sem)
 {
+	if (KSEM) {
+		kthread_sem_destroy(&sem->ksem);
+		return;
+	}
 	assert(inited);
   queue_destroy(&sem->queue);
   if (kthread_mutex_destroy(&sem->lock)) {

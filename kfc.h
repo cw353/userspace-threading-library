@@ -25,6 +25,7 @@ typedef struct {
   int counter;
   queue_t queue;
   kthread_mutex_t lock;
+	kthread_sem_t ksem;
 } kfc_sem_t;
 
 enum thread_state {
