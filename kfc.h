@@ -60,6 +60,7 @@ typedef struct {
   int task_target; // tid of target thread (-1 if none)
   ucontext_t sched_ctx;
 	kthread_mutex_t *lock;
+	queue_t *queue;
 } kfc_ksched_t;
 
 typedef struct {

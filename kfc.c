@@ -216,31 +216,18 @@ void schedule()
 			break;
     case JOIN:
 			assert(current_pcb);
-      lock_pcbs();
+
       int target_tid = kinfo->sched_info.task_target;
-      assert(target_tid > -1);
-			assert(target_tid != current_tid);
-      kfc_pcb_t *target_pcb = pcbs[target_tid];
-			if (target_pcb->state != FINISHED) {
-				// if target thread isn't finished, indicate that current thread
-				// is waiting to join on it
-				assert(queue_size(&target_pcb->join_queue) == 0);
-				if (queue_enqueue(&target_pcb->join_queue, current_pcb)) {
-					perror("schedule (queue_enqueue)");
-					abort();
-				}
-        current_pcb->state = WAITING_JOIN;
-      } else {
-				// if target thread has finished (i.e. the target thread ran kfc_exit()
-				// after the current thread ran the latest swapcontext call in kfc_join()),
-				// update both current thread's and target thread's state and return current
-				// thread to the ready queue
-				assert(queue_size(&target_pcb->join_queue) == 0);
-				current_pcb->state = READY;
-				ready_enqueue(current_pcb);
+			assert(pcbs[target_tid]->state != FINISHED);
+			assert(&pcbs[target_tid]->join_queue == kinfo->sched_info.queue);
+			assert(queue_size(kinfo->sched_info.queue) == 0);
+
+			current_pcb->state = WAITING_JOIN;
+			if (queue_enqueue(kinfo->sched_info.queue, current_pcb)) {
+				perror("schedule (queue_enqueue)");
+				abort();
 			}
       unlock_pcbs();
-      kinfo->sched_info.task_target = -1;
       break;
     case SEM_WAIT:
 			assert(current_pcb);
@@ -281,6 +268,8 @@ void schedule()
   }
   kinfo->sched_info.task = NONE;
 	kinfo->sched_info.lock = NULL;
+	kinfo->sched_info.queue = NULL;
+	kinfo->sched_info.task_target = -1;
 	assert(kinfo->sched_info.task_sem == NULL);
 	assert(kinfo->sched_info.task_target == -1);
 
@@ -439,6 +428,8 @@ kfc_init(int kthreads, int quantum_us)
     kthread_info[i]->sched_info.task = NONE;
     kthread_info[i]->sched_info.task_sem = NULL;
     kthread_info[i]->sched_info.task_target = -1;
+		kthread_info[i]->sched_info.lock = NULL;
+		kthread_info[i]->sched_info.queue = NULL;
     if (getcontext(&kthread_info[i]->sched_info.sched_ctx)) {
       perror("kfc_init (getcontext)");
       abort();
@@ -716,15 +707,15 @@ kfc_join(tid_t tid, void **pret)
 		
 		assert(queue_size(&current_pcb->join_queue) == 0);
 
-		unlock_pcbs();
-
   	// let scheduler know that the current user thread has requested to join
   	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		assert(kinfo->sched_info.task == NONE);
 		assert(kinfo->sched_info.task_sem == NULL);
 		assert(kinfo->sched_info.task_target == -1);
+		assert(kinfo->sched_info.queue == NULL);
+
 		kinfo->sched_info.task = JOIN;
-		assert(((int) tid) >= 0);
+		kinfo->sched_info.queue = &target_pcb->join_queue;
 		kinfo->sched_info.task_target = (int) tid;
 
     // block by saving caller state and swapping to scheduler
