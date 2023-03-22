@@ -246,7 +246,6 @@ void schedule()
 
   if (next_pcb == &exitall) {
 		if (kthread_self() == kthread_info[MAIN_KTHREAD_INDEX]->ktid) {
-			DPRINTF("main kthread %d received exitall and is waiting on exitall_sem\n", kthread_self());
 			for (int i = 0; i < num_kthreads-1; i++) {
 				if (kthread_sem_wait(&exitall_sem)) {
 					perror("schedule (kthread_sem_wait)");
@@ -255,7 +254,6 @@ void schedule()
 			}
 			schedule();
 		} else {
-			DPRINTF("kthread %d received exitall and is exiting\n", kthread_self());
 			kthread_sem_post(&exitall_sem);
 			kthread_exit();
 		}
@@ -456,7 +454,6 @@ kfc_teardown(void)
 {
 	assert(inited);
 
-	DPRINTF("kthread %d is starting teardown\n", kthread_self());
   for (int i = 0; i < num_kthreads; i++) {
     ready_enqueue(&exitall);
   }
@@ -475,7 +472,6 @@ kfc_teardown(void)
 
 	kthread_t self = kthread_self();
 	assert(self == kthread_info[MAIN_KTHREAD_INDEX]->ktid);
-	DPRINTF("main kthread %d is continuing teardown\n", self);
 
   // join kthreads except for "main" kthread
   for (int i = MAIN_KTHREAD_INDEX+1; i < num_kthreads; i++) {
