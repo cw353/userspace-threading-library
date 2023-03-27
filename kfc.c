@@ -68,11 +68,12 @@ kthread_func(void *arg)
 		perror("kthread_sem_wait");
 		abort();
 	}
+	assert(inited);
   if (setcontext(get_sched_ctx())) {
     perror("setcontext");
     abort();
   }
-  return 0;
+  return NULL;
 }
 
 int get_next_tid()
