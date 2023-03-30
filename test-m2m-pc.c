@@ -97,7 +97,7 @@ main(void)
 {
 	tid_t ptid[PRODUCERS], ctid[CONSUMERS];
 
-	INIT(KTHREADS, 0);
+	INIT(KTHREADS, 10000000);
 
 	kthread_mutex_init(&numlock);
 	kfc_sem_init(&mutex, 1);

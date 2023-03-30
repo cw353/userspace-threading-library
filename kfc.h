@@ -66,6 +66,7 @@ typedef struct {
   int ktid;
   int current_tid;
   kfc_ksched_t sched_info;
+	timer_t timer_id;
 } kfc_kinfo_t;
 
 struct ready_queue {

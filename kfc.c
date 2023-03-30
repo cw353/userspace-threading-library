@@ -1,3 +1,4 @@
+#include <unistd.h>
 #include <assert.h>
 #include <sys/types.h>
 #include <stdlib.h>
@@ -10,6 +11,9 @@
 #include "bitvec.h"
 #include "ucontext.h"
 #include "valgrind.h"
+
+// reference: https://www.openwall.com/lists/musl/2019/08/01/8
+#define sigev_notify_thread_id _sigev_un._tid
 
 static int inited = 0;
 
@@ -31,6 +35,7 @@ static kfc_pcb_t exitall;
 
 
 // shared data that doesn't need to be synchronized
+static int quantum;
 static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
 static unsigned int MAIN_KTHREAD_INDEX = 0;
@@ -61,6 +66,51 @@ get_sched_ctx()
   return &kinfo->sched_info.sched_ctx;
 }
 
+void sigrtmin_handler(int sig) {
+	if (inited) {
+		//DPRINTF("caught SIGRTMIN in kthread %d\n", kthread_self());
+		write(STDERR_FILENO, "caught SIGRTMN\n", 16);
+		kfc_yield();
+	}
+}
+
+void set_timer_interrupt(kthread_t kid) {
+  kfc_kinfo_t *kinfo = get_kthread_info(kid);
+
+	struct sigevent sev;
+	struct itimerspec its;
+
+	// set up timer signal handler
+	sev.sigev_notify = SIGEV_THREAD_ID;
+	sev.sigev_notify_thread_id = kid;
+	sev.sigev_signo = SIGRTMIN;
+	sev.sigev_value.sival_ptr = &kinfo->timer_id;
+
+	if (signal(SIGRTMIN, sigrtmin_handler) == SIG_ERR) {
+		perror("signal");
+		abort();
+	}
+
+	// create timer
+	if (timer_create(CLOCK_REALTIME, &sev, &kinfo->timer_id)) {
+		perror("timer_create");
+		abort();
+	}
+	//DPRINTF("timer id for kthread %d is 0x%lx\n", kid, (long) kinfo->timer_id);
+
+	// start timer
+	its.it_value.tv_sec = 0;
+	its.it_value.tv_nsec = quantum;
+	its.it_interval.tv_sec = its.it_value.tv_sec;
+	its.it_interval.tv_nsec = its.it_value.tv_nsec;
+
+	if (timer_settime(kinfo->timer_id, 0, &its, NULL) == -1) {
+		perror("timer_settime");
+		abort();
+	}
+
+}
+
 void *
 kthread_func(void *arg)
 {
@@ -69,6 +119,12 @@ kthread_func(void *arg)
 		abort();
 	}
 	assert(inited);
+
+	if (quantum) {
+		//DPRINTF("setting up timer interrupt for kthread %d\n", kthread_self());
+		set_timer_interrupt(kthread_self());
+	}
+
   if (setcontext(get_sched_ctx())) {
     perror("setcontext");
     abort();
@@ -316,6 +372,7 @@ kfc_init(int kthreads, int quantum_us)
 	assert(!inited);
 
   num_kthreads = kthreads;
+	quantum = quantum_us;
   if (kthread_sem_init(&inited_sem, 0)) {
     perror("kthread_sem_init");
     abort();
@@ -412,6 +469,7 @@ kfc_init(int kthreads, int quantum_us)
       perror("makecontext");
       abort();
     }
+		kthread_info[i]->timer_id = 0;	
   }
 
   // create other kthreads
@@ -429,6 +487,9 @@ kfc_init(int kthreads, int quantum_us)
 			abort();
 		}
   }
+
+	// set timer interrupt for main kthread
+	set_timer_interrupt(kthread_self());
 
 	return 0;
 
@@ -480,6 +541,7 @@ kfc_teardown(void)
 
 	kthread_t self = kthread_self();
 	assert(self == kthread_info[MAIN_KTHREAD_INDEX]->ktid);
+	DPRINTF("finishing teardown\n");
 
   // join kthreads except for "main" kthread
   for (int i = MAIN_KTHREAD_INDEX+1; i < num_kthreads; i++) {
@@ -514,6 +576,11 @@ kfc_teardown(void)
 
   // free kthread_info
   for (int i = 0; i < num_kthreads; i++) {
+		if (quantum) {
+			if (timer_delete(kthread_info[i]->timer_id)) {
+				perror("timer_delete");
+			}
+		}
     free(kthread_info[i]->sched_info.sched_ctx.uc_stack.ss_sp);
     free(kthread_info[i]);
   }
@@ -521,12 +588,10 @@ kfc_teardown(void)
 
   if (kthread_sem_destroy(&inited_sem)) {
     perror("kthread_sem_destroy");
-    abort();
   }
 
   if (kthread_sem_destroy(&exitall_sem)) {
     perror("kthread_sem_destroy");
-    abort();
   }
 
   // free main thread

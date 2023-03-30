@@ -51,7 +51,7 @@ main(void)
 {
 	VALGRIND_STACK_REGISTER(stack, TEST_STACK_SZ);
 
-	INIT(1, 0);
+	INIT(1, 100000);
 
 	CHECKPOINT(0);
 
