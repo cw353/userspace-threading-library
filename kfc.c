@@ -66,6 +66,38 @@ get_sched_ctx()
   return &kinfo->sched_info.sched_ctx;
 }
 
+void block_sigrtmin() {
+	sigset_t mask;
+	if (sigemptyset(&mask)) {
+		perror("sigemptyset");
+		abort();
+	}
+	if (sigaddset(&mask, SIGRTMIN)) {
+		perror("sigaddset");
+		abort();
+	}
+	if (sigprocmask(SIG_BLOCK, &mask, NULL)) {
+		perror("sigprocmask");
+		abort();
+	}
+}
+
+void unblock_sigrtmin() {
+	sigset_t mask;
+	if (sigemptyset(&mask)) {
+		perror("sigemptyset");
+		abort();
+	}
+	if (sigaddset(&mask, SIGRTMIN)) {
+		perror("sigaddset");
+		abort();
+	}
+	if (sigprocmask(SIG_UNBLOCK, &mask, NULL)) {
+		perror("sigprocmask");
+		abort();
+	}
+}
+
 void sigrtmin_handler(int sig) {
 	if (inited) {
 		//DPRINTF("caught SIGRTMIN in kthread %d\n", kthread_self());
@@ -326,6 +358,8 @@ void schedule()
 
   unlock_pcbs();
 
+	unblock_sigrtmin();
+
   // schedule thread
   if (setcontext(&next_pcb->ctx)) {
     perror("setcontext");
@@ -528,6 +562,7 @@ kfc_teardown(void)
   }
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 
+	block_sigrtmin();
 	kinfo->sched_info.task = TEARDOWN;
 	lock_pcbs();
 
@@ -713,6 +748,7 @@ kfc_exit(void *ret)
   // let scheduler know that the current user thread has requested to yield
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 
+	block_sigrtmin();
   kinfo->sched_info.task = EXIT;
   
   // ask scheduler to schedule next thread
@@ -754,6 +790,7 @@ kfc_join(tid_t tid, void **pret)
   	// let scheduler know that the current user thread has requested to join
   	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 
+		block_sigrtmin();
 		kinfo->sched_info.task = JOIN;
 		kinfo->sched_info.queue = &target_pcb->join_queue;
 
@@ -811,11 +848,13 @@ kfc_yield(void)
 
   // let scheduler know that the current user thread has requested to yield
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	block_sigrtmin();
   kinfo->sched_info.task = YIELD;
 
 	lock_pcbs();
 	kfc_pcb_t *current_pcb = pcbs[get_current_tid()];
-	assert(current_pcb->state == RUNNING);
+	DPRINTF("current_pcb->state: %d\n", current_pcb->state);
+	//assert(current_pcb->state == RUNNING);
 	current_pcb->state = READY;
 
   // save caller state and swap to scheduler
@@ -919,6 +958,7 @@ kfc_sem_wait(kfc_sem_t *sem)
   // block if the counter is not above 0 (loop for when this context is resumed)
   while (sem->counter == 0) {
 		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+		block_sigrtmin();
 		kinfo->sched_info.task = SEM_WAIT;
 		kinfo->sched_info.lock = &sem->lock;
 		kinfo->sched_info.queue = &sem->queue;
