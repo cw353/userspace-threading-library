@@ -52,9 +52,8 @@ typedef struct {
   void *retval;
 	queue_t join_queue;
   ucontext_t ctx;
-} kfc_pcb_t;
+} kfc_tcb_t;
 
-// if task is set, assume pcbs_lock is held by kthread
 typedef struct {
   enum sched_task task;
   ucontext_t sched_ctx;
