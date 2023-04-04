@@ -1,4 +1,3 @@
-#include <unistd.h>
 #include <assert.h>
 #include <sys/types.h>
 #include <stdlib.h>
@@ -33,8 +32,8 @@ static kfc_tcb_t exitall; // to signal teardown
 
 
 // shared data that doesn't need to be synchronized
-static sig_atomic_t inited = 0;
-static int quantum;
+static int inited = 0;
+static sig_atomic_t quantum;
 static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
 static unsigned int MAIN_KTHREAD_INDEX = 0;
@@ -64,8 +63,7 @@ get_sched_ctx()
 }
 
 void sigrtmin_handler(int sig) {
-	if (inited) {
-		write(STDERR_FILENO, "caught SIGRTMIN\n", 17);
+	if (inited && quantum) {
 		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		kinfo->preempted = 1;
 	}
@@ -538,7 +536,8 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
-	inited = 0;
+
+	quantum = 0; // disable preemption if enabled
 
 	// signal all kthreads that teardown has been called
   for (int i = 0; i < num_kthreads; i++) {
@@ -614,6 +613,8 @@ kfc_teardown(void)
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
+
+	inited = 0;
 }
 
 /**
