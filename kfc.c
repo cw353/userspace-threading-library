@@ -15,8 +15,6 @@
 // reference: https://www.openwall.com/lists/musl/2019/08/01/8
 #define sigev_notify_thread_id _sigev_un._tid
 
-static int inited = 0;
-
 // synchronized shared data
 static kthread_sem_t inited_sem;
 static kthread_sem_t exitall_sem;
@@ -26,15 +24,16 @@ static struct ready_queue rqueue;
 static bitvec_t bitvec; // bit i is 1 if tid i is in use and 0 otherwise
 static kthread_mutex_t bitvec_lock;
 
-static kfc_pcb_t *pcbs[KFC_MAX_THREADS]; // user thread PCBs
-static kthread_mutex_t pcbs_lock;
+static kfc_tcb_t *tcbs[KFC_MAX_THREADS]; // user thread PCBs
+static kthread_mutex_t tcbs_lock;
 
 static ucontext_t abort_ctx;
 
-static kfc_pcb_t exitall;
+static kfc_tcb_t exitall; // to signal teardown
 
 
 // shared data that doesn't need to be synchronized
+static int inited = 0;
 static int quantum;
 static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
@@ -53,12 +52,6 @@ get_kthread_info(kthread_t ktid)
   return kinfo;
 }
 
-tid_t
-get_current_tid()
-{
-  return get_kthread_info(kthread_self())->current_tid;
-}
-
 ucontext_t *
 get_sched_ctx()
 {
@@ -66,44 +59,11 @@ get_sched_ctx()
   return &kinfo->sched_info.sched_ctx;
 }
 
-void block_sigrtmin() {
-	/*sigset_t mask;
-	if (sigemptyset(&mask)) {
-		perror("sigemptyset");
-		abort();
-	}
-	if (sigaddset(&mask, SIGRTMIN)) {
-		perror("sigaddset");
-		abort();
-	}
-	if (sigprocmask(SIG_BLOCK, &mask, NULL)) {
-		perror("sigprocmask");
-		abort();
-	}*/
-}
-
-void unblock_sigrtmin() {
-	/*sigset_t mask;
-	if (sigemptyset(&mask)) {
-		perror("sigemptyset");
-		abort();
-	}
-	if (sigaddset(&mask, SIGRTMIN)) {
-		perror("sigaddset");
-		abort();
-	}
-	if (sigprocmask(SIG_UNBLOCK, &mask, NULL)) {
-		perror("sigprocmask");
-		abort();
-	}*/
-}
-
 void sigrtmin_handler(int sig) {
-	if (inited) {
-		//write(STDERR_FILENO, "caught SIGRTMN\n", 16);
-		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-		kinfo->preempted = 1;
-	}
+	assert(inited); // XXX ?
+	write(STDERR_FILENO, "caught SIGRTMIN\n", 17);
+	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	kinfo->preempted = 1;
 }
 
 void set_timer_interrupt(kthread_t kid) {
@@ -128,7 +88,6 @@ void set_timer_interrupt(kthread_t kid) {
 		perror("timer_create");
 		abort();
 	}
-	//DPRINTF("timer id for kthread %d is 0x%lx\n", kid, (long) kinfo->timer_id);
 
 	// start timer
 	its.it_value.tv_sec = 0;
@@ -140,23 +99,20 @@ void set_timer_interrupt(kthread_t kid) {
 		perror("timer_settime");
 		abort();
 	}
-
 }
 
 void *
-kthread_func(void *arg)
+kthread_main(void *arg)
 {
   if (kthread_sem_wait(&inited_sem)) {
 		perror("kthread_sem_wait");
 		abort();
 	}
-	assert(inited);
 
+	assert(inited);
 	if (quantum) {
-		//DPRINTF("setting up timer interrupt for kthread %d\n", kthread_self());
 		set_timer_interrupt(kthread_self());
 	}
-
   if (setcontext(get_sched_ctx())) {
     perror("setcontext");
     abort();
@@ -188,18 +144,18 @@ int get_next_tid()
   return ret;
 }
 
-void lock_pcbs()
+void lock_tcbs()
 {
-	if (kthread_mutex_lock(&pcbs_lock)) {
-    perror("pcbs_lock");
+	if (kthread_mutex_lock(&tcbs_lock)) {
+    perror("tcbs_lock");
     abort();
   }
 }
 
-void unlock_pcbs()
+void unlock_tcbs()
 {
-  if (kthread_mutex_unlock(&pcbs_lock)) {
-    perror("pcbs_unlock");
+  if (kthread_mutex_unlock(&tcbs_lock)) {
+    perror("tcbs_unlock");
     abort();
   }
 }
@@ -218,13 +174,13 @@ void reclaim_tid(tid_t tid)
 }
 
 void
-ready_enqueue(kfc_pcb_t *pcb)
+ready_enqueue(kfc_tcb_t *tcb)
 {
   if (kthread_mutex_lock(&rqueue.lock)) {
     perror("kthread_mutex_lock");
     abort();
   }
-  if (queue_enqueue(&rqueue.queue, pcb)) {
+  if (queue_enqueue(&rqueue.queue, tcb)) {
     perror("queue_enqueue");
     abort();
   }
@@ -238,7 +194,7 @@ ready_enqueue(kfc_pcb_t *pcb)
   }
 }
 
-kfc_pcb_t *
+kfc_tcb_t *
 ready_dequeue()
 {
   if (kthread_sem_wait(&rqueue.not_empty)) {
@@ -252,58 +208,60 @@ ready_dequeue()
   }
 
   assert(queue_size(&rqueue.queue) > 0);
-  kfc_pcb_t *pcb = queue_dequeue(&rqueue.queue);
-  assert(pcb);
+  kfc_tcb_t *tcb = queue_dequeue(&rqueue.queue);
+  assert(tcb);
 
   if (kthread_mutex_unlock(&rqueue.lock)) {
     perror("kthread_mutex_lock");
     abort();
   }
 
-  return pcb;
+  return tcb;
 }
 
 /**
  * Schedule the next thread.
+ * Precondition: if sched_info.task != NONE, then this kernel thread
+ * is already holding tcbs_lock.
  */
 void schedule()
 {
-	block_sigrtmin();
   
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-	//tid_t current_tid = kinfo->current_tid;
-	int current_tid = get_current_tid();
-	kfc_pcb_t *current_pcb = current_tid > -1 ? pcbs[current_tid] : NULL;
+	int current_tid = kfc_self();
+	kfc_tcb_t *current_tcb = current_tid > -1 ? tcbs[current_tid] : NULL;
 
 	assert(kthread_self() == kinfo->ktid);
 
+	// handle any tasks assigned to the scheduler (if any)
+	// (to avoid race conditions)
   switch(kinfo->sched_info.task) {
     case NONE:
       break;
     case YIELD:
-      ready_enqueue(current_pcb);
-      unlock_pcbs();
+      ready_enqueue(current_tcb);
+      unlock_tcbs();
       break;
 		case EXIT:
 			// if another thread is waiting to join on this thread,
 			// return it to the ready queue
-			if (queue_size(&current_pcb->join_queue) > 0) {
-				kfc_pcb_t *join_pcb = queue_dequeue(&current_pcb->join_queue);
-				assert(join_pcb && join_pcb->tid != current_tid && join_pcb->state == WAITING_JOIN);
-				join_pcb->state = READY;
-				ready_enqueue(join_pcb);
+			if (queue_size(&current_tcb->join_queue) > 0) {
+				kfc_tcb_t *join_tcb = queue_dequeue(&current_tcb->join_queue);
+				assert(join_tcb && join_tcb->tid != current_tid && join_tcb->state == WAITING_JOIN);
+				join_tcb->state = READY;
+				ready_enqueue(join_tcb);
 			}
-			unlock_pcbs();
+			unlock_tcbs();
 			break;
     case JOIN:
-			if (queue_enqueue(kinfo->sched_info.queue, current_pcb)) {
+			if (queue_enqueue(kinfo->sched_info.queue, current_tcb)) {
 				perror("queue_enqueue");
 				abort();
 			}
-      unlock_pcbs();
+      unlock_tcbs();
       break;
     case SEM_WAIT:
-			if (queue_enqueue(kinfo->sched_info.queue, current_pcb)) {
+			if (queue_enqueue(kinfo->sched_info.queue, current_tcb)) {
 				perror("queue_enqueue");
 				abort();
 			}
@@ -311,12 +269,12 @@ void schedule()
 				perror("kthread_mutex_unlock");
 				abort();
 			}
-			unlock_pcbs();
+			unlock_tcbs();
       break;
 		case TEARDOWN:
-			current_pcb->state = READY;
-			ready_enqueue(current_pcb);
-			unlock_pcbs();
+			current_tcb->state = READY;
+			ready_enqueue(current_tcb);
+			unlock_tcbs();
 			break;
     default:
       DPRINTF("schedule: invalid task");
@@ -328,9 +286,13 @@ void schedule()
 	kinfo->sched_info.queue = NULL;
 
   // get next thread from ready queue (fcfs)
-  kfc_pcb_t *next_pcb = ready_dequeue();
+  kfc_tcb_t *next_tcb = ready_dequeue();
 
-  if (next_pcb == &exitall) {
+	// handle teardown
+  if (next_tcb == &exitall) {
+		// if this is the main kthread, wait for the other kthreads to exit,
+		// then call schedule() to schedule the tcb that is in the middle of
+		// teardown and has been placed in the ready queue
 		if (kthread_self() == kthread_info[MAIN_KTHREAD_INDEX]->ktid) {
 			for (int i = 0; i < num_kthreads-1; i++) {
 				if (kthread_sem_wait(&exitall_sem)) {
@@ -340,6 +302,7 @@ void schedule()
 			}
 			schedule();
 		} else {
+			// otherwise, exit
 			if (kthread_sem_post(&exitall_sem)) {
 				perror("kthread_sem_post");
 				abort();
@@ -348,23 +311,20 @@ void schedule()
 		}
   }
 
-  lock_pcbs();
+  lock_tcbs();
 
   // update current tid for this kthread
-  get_kthread_info(kthread_self())->current_tid = next_pcb->tid;
+  get_kthread_info(kthread_self())->current_tid = next_tcb->tid;
 
   // update thread state
-  assert(next_pcb->state == READY);
-  next_pcb->state = RUNNING;
+  assert(next_tcb->state == READY);
+  next_tcb->state = RUNNING;
 
-  unlock_pcbs();
-
-	unblock_sigrtmin();
-
+  unlock_tcbs();
 	kinfo->preempted = 0;
 
   // schedule thread
-  if (setcontext(&next_pcb->ctx)) {
+  if (setcontext(&next_tcb->ctx)) {
     perror("setcontext");
     abort();
   }
@@ -407,7 +367,6 @@ int
 kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
-	block_sigrtmin();
 
   num_kthreads = kthreads;
 	quantum = quantum_us;
@@ -421,13 +380,11 @@ kfc_init(int kthreads, int quantum_us)
     abort();
   }
 
-  // initialize pcbs lock
-  if (kthread_mutex_init(&pcbs_lock)) {
+  if (kthread_mutex_init(&tcbs_lock)) {
     perror("kthread_mutex_init");
     abort();
   }
 
-  // initialize bitvector and its lock
   if (bitvec_init(&bitvec, KFC_MAX_THREADS)) {
     perror ("bitvec_init");
     abort();
@@ -437,7 +394,6 @@ kfc_init(int kthreads, int quantum_us)
     abort();
   }
 
-  // initialize ready queue and its synchronization constructs
   if (queue_init(&rqueue.queue)) {
     perror ("queue_init");
     abort();
@@ -454,12 +410,12 @@ kfc_init(int kthreads, int quantum_us)
   // initialize kfc_ctx for main thread
   int tid = get_next_tid();
 	assert(tid >= 0);
-  pcbs[tid] = malloc(sizeof(kfc_pcb_t));
-	assert(pcbs[tid]);
-  pcbs[tid]->stack_allocated = 0;
-  pcbs[tid]->tid = tid;
-  pcbs[tid]->state = RUNNING;
-  if (queue_init(&pcbs[tid]->join_queue)) {
+  tcbs[tid] = malloc(sizeof(kfc_tcb_t));
+	assert(tcbs[tid]);
+  tcbs[tid]->stack_allocated = 0;
+  tcbs[tid]->tid = tid;
+  tcbs[tid]->state = RUNNING;
+  if (queue_init(&tcbs[tid]->join_queue)) {
     perror("queue_init");
     abort();
   }
@@ -477,7 +433,6 @@ kfc_init(int kthreads, int quantum_us)
     perror("makecontext");
     abort();
   }
-
 
   // initialize kthread_info
   kthread_info = malloc(num_kthreads * sizeof(kfc_kinfo_t *));
@@ -513,7 +468,7 @@ kfc_init(int kthreads, int quantum_us)
 
   // create other kthreads
   for (int i = MAIN_KTHREAD_INDEX+1; i < num_kthreads; i++) {
-    if (kthread_create(&kthread_info[i]->ktid, kthread_func, NULL)) {
+    if (kthread_create(&kthread_info[i]->ktid, kthread_main, NULL)) {
       perror("kthread_create");
       abort();
     }
@@ -528,23 +483,26 @@ kfc_init(int kthreads, int quantum_us)
   }
 
 	// set timer interrupt for main kthread
-	set_timer_interrupt(kthread_self());
-	unblock_sigrtmin();
-
+	if (quantum) {
+		set_timer_interrupt(kthread_self());
+	}
 	return 0;
 
 }
 
-// Precondition: pcbs[tid] != NULL
+/* 
+ * Destroy a tcb.
+ * Precondition: tcbs[tid] != NULL.
+ */
 void
 destroy_thread(tid_t tid)
 {
-  queue_destroy(&pcbs[tid]->join_queue);
-  if (pcbs[tid]->stack_allocated) {
-    free(pcbs[tid]->ctx.uc_stack.ss_sp);
+  queue_destroy(&tcbs[tid]->join_queue);
+  if (tcbs[tid]->stack_allocated) {
+    free(tcbs[tid]->ctx.uc_stack.ss_sp);
   }
-  free(pcbs[tid]);
-  pcbs[tid] = NULL;
+  free(tcbs[tid]);
+  tcbs[tid] = NULL;
 }
 
 /**
@@ -562,29 +520,28 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
-	block_sigrtmin();
 
+	// signal all kthreads that teardown has been called
   for (int i = 0; i < num_kthreads; i++) {
     ready_enqueue(&exitall);
   }
+
+	// enqueue this context into the ready queue so that the rest of 
+	// this function will be executed by the main kthread
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-
 	kinfo->sched_info.task = TEARDOWN;
-	lock_pcbs();
-
-	// block by saving caller state and swapping to scheduler
-	if (swapcontext(&pcbs[get_current_tid()]->ctx, get_sched_ctx())) {
+	lock_tcbs();
+	if (swapcontext(&tcbs[kfc_self()]->ctx, get_sched_ctx())) {
 		perror("swapcontext");
 		abort();
 	}
 
+	// resume teardown (on the main kthread)
 	assert(inited);
-
 	kthread_t self = kthread_self();
 	assert(self == kthread_info[MAIN_KTHREAD_INDEX]->ktid);
-	DPRINTF("finishing teardown\n");
 
-  // join kthreads except for "main" kthread
+  // join kthreads except for main kthread
   for (int i = MAIN_KTHREAD_INDEX+1; i < num_kthreads; i++) {
 		assert(kthread_info[i]->ktid != self);
 		kthread_join(kthread_info[i]->ktid, NULL);
@@ -603,11 +560,12 @@ kfc_teardown(void)
   while (kthread_mutex_destroy(&bitvec_lock) == EBUSY);
 
   // destroy other synchronization constructs
-  while (kthread_mutex_destroy(&pcbs_lock) == EBUSY);
+  while (kthread_mutex_destroy(&tcbs_lock) == EBUSY);
 
-  // free zombie threads (exclude KFC_TID_MAIN)
+  // free zombie threads (excluding KFC_TID_MAIN, the context
+	// in which this function is running)
   for (int i = KFC_TID_MAIN + 1; i < KFC_MAX_THREADS; i++) {
-    if (pcbs[i]) {
+    if (tcbs[i]) {
       destroy_thread(i);
     }
   }
@@ -615,29 +573,29 @@ kfc_teardown(void)
   // free abort_ctx
   free(abort_ctx.uc_stack.ss_sp);
 
-  // free kthread_info
-  for (int i = 0; i < num_kthreads; i++) {
+	// free kthread_info
+	for (int i = 0; i < num_kthreads; i++) {
 		if (quantum) {
 			if (timer_delete(kthread_info[i]->timer_id)) {
 				perror("timer_delete");
 			}
 		}
-    free(kthread_info[i]->sched_info.sched_ctx.uc_stack.ss_sp);
+		free(kthread_info[i]->sched_info.sched_ctx.uc_stack.ss_sp);
     free(kthread_info[i]);
   }
   free(kthread_info);
 
   if (kthread_sem_destroy(&inited_sem)) {
     perror("kthread_sem_destroy");
+    abort();
   }
-
   if (kthread_sem_destroy(&exitall_sem)) {
     perror("kthread_sem_destroy");
+    abort();
   }
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
-	unblock_sigrtmin();
 
 	inited = 0;
 }
@@ -647,9 +605,9 @@ kfc_teardown(void)
  */
 void trampoline(void *(*start_func)(void *), void *arg)
 {
-  lock_pcbs();
-  assert(pcbs[get_current_tid()]->state == RUNNING);
-  unlock_pcbs();
+  lock_tcbs();
+  assert(tcbs[kfc_self()]->state == RUNNING);
+  unlock_tcbs();
 
   // run start_func and pass return value to kfc_exit
   kfc_exit(start_func(arg));
@@ -673,15 +631,13 @@ void trampoline(void *(*start_func)(void *), void *arg)
  *
  * @return 0 if successful, nonzero on failure
  */
-// XXX Reference: https://www.ibm.com/docs/en/zos/2.2.0?topic=functions-makecontext-modify-user-context
 int
 kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		caddr_t stack_base, size_t stack_size)
 {
 	assert(inited);
-	block_sigrtmin();
 
-  // create new context (return early with error if KFC_MAX_THREADS has been reached) (XXX change later to allow tid reuse)
+	// create new context
   tid_t new_tid = get_next_tid(); 
 	if (new_tid < 0) {
 		errno = EAGAIN;
@@ -690,47 +646,46 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 	}
   *ptid = new_tid;
 
-  lock_pcbs();
+  lock_tcbs();
 
-  pcbs[new_tid] = malloc(sizeof(kfc_pcb_t));
-	if (!pcbs[new_tid]) {
+  tcbs[new_tid] = malloc(sizeof(kfc_tcb_t));
+	if (!tcbs[new_tid]) {
 		perror("malloc");
 		return -1;
 	}
-  pcbs[new_tid]->tid = new_tid;
-  pcbs[new_tid]->state = READY;
-  if (queue_init(&pcbs[new_tid]->join_queue)) {
+  tcbs[new_tid]->tid = new_tid;
+  tcbs[new_tid]->state = READY;
+  if (queue_init(&tcbs[new_tid]->join_queue)) {
     perror("queue_init");
     abort();
   }
-  if (getcontext(&pcbs[new_tid]->ctx)) {
+  if (getcontext(&tcbs[new_tid]->ctx)) {
     perror("getcontext");
     abort();
   }
 
   // allocate stack for new context
-  if (allocate_stack(&pcbs[new_tid]->ctx.uc_stack, stack_base, stack_size)) {
-		free(pcbs[new_tid]);
+  if (allocate_stack(&tcbs[new_tid]->ctx.uc_stack, stack_base, stack_size)) {
+		free(tcbs[new_tid]);
 		return -1;
 	}
-  pcbs[new_tid]->stack_allocated = stack_base ? 0 : 1;
+  tcbs[new_tid]->stack_allocated = stack_base ? 0 : 1;
 
   // successor context should never be reached (it aborts the program)
-  pcbs[new_tid]->ctx.uc_link = &abort_ctx;
+  tcbs[new_tid]->ctx.uc_link = &abort_ctx;
   
   // makecontext
   errno = 0;
-  makecontext(&pcbs[new_tid]->ctx, (void (*)(void)) trampoline, 2, start_func, arg);
+  makecontext(&tcbs[new_tid]->ctx, (void (*)(void)) trampoline, 2, start_func, arg);
   if (errno != 0) {
     perror("makecontext");
     abort();
   }
 
   // add new context to ready queue
-  ready_enqueue(pcbs[new_tid]);
+  ready_enqueue(tcbs[new_tid]);
 
-  unlock_pcbs();
-	unblock_sigrtmin();
+  unlock_tcbs();
 
   return 0;
 }
@@ -745,21 +700,18 @@ void
 kfc_exit(void *ret)
 {
 	assert(inited);
-	block_sigrtmin();
 
   // update thread state and save return value
-  lock_pcbs();
+  lock_tcbs();
 
-	kfc_pcb_t *current_pcb = pcbs[get_current_tid()];
-  current_pcb->retval = ret;
-	assert(current_pcb->state == RUNNING);
-	current_pcb->state = FINISHED;
+	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+  current_tcb->retval = ret;
+	assert(current_tcb->state == RUNNING);
+	current_tcb->state = FINISHED;
 
-  // let scheduler know that the current user thread has requested to yield
+  // let scheduler know that the current user thread has requested to exit
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-
   kinfo->sched_info.task = EXIT;
-	unblock_sigrtmin();
   
   // ask scheduler to schedule next thread
   if (setcontext(get_sched_ctx())) {
@@ -785,53 +737,49 @@ int
 kfc_join(tid_t tid, void **pret)
 {
 	assert(inited);
-	block_sigrtmin();
 
-  tid_t current_tid = get_current_tid();
-  kfc_pcb_t *current_pcb = pcbs[current_tid];
-  kfc_pcb_t *target_pcb = pcbs[tid]; 
+  tid_t current_tid = kfc_self();
+  kfc_tcb_t *current_tcb = tcbs[current_tid];
+  kfc_tcb_t *target_tcb = tcbs[tid]; 
 
-	lock_pcbs();
+	lock_tcbs();
 
   // Block if the target thread is not finished yet
-  if (target_pcb->state != FINISHED) {
+  if (target_tcb->state != FINISHED) {
 		
-		assert(queue_size(&current_pcb->join_queue) == 0);
+		assert(queue_size(&current_tcb->join_queue) == 0);
 
   	// let scheduler know that the current user thread has requested to join
   	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 
 		kinfo->sched_info.task = JOIN;
-		kinfo->sched_info.queue = &target_pcb->join_queue;
+		kinfo->sched_info.queue = &target_tcb->join_queue;
 
-		current_pcb->state = WAITING_JOIN;
-		unblock_sigrtmin();
+		current_tcb->state = WAITING_JOIN;
 
     // block by saving caller state and swapping to scheduler
-    if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {
+    if (swapcontext(&current_tcb->ctx, get_sched_ctx())) {
       perror("swapcontext");
       abort();
     }
 
 		// reaquire readlock
-		lock_pcbs();
-		block_sigrtmin();
+		lock_tcbs();
   }
 
   // continue once the target thread has finished
-  assert(pcbs[tid]->state == FINISHED);
+  assert(tcbs[tid]->state == FINISHED);
 
   // Pass target thread's return value to caller
   if (pret) {
-    *pret = pcbs[tid]->retval;
+    *pret = tcbs[tid]->retval;
   }
 
-  unlock_pcbs();
+  unlock_tcbs();
 
   // Clean up target thread's resources
   reclaim_tid(tid);
   destroy_thread(tid);
-	unblock_sigrtmin();
 
 	return 0;
 }
@@ -845,7 +793,7 @@ tid_t
 kfc_self(void)
 {
 	assert(inited);
-	return get_current_tid();
+  return get_kthread_info(kthread_self())->current_tid;
 }
 
 /**
@@ -858,20 +806,18 @@ void
 kfc_yield(void)
 {
 	assert(inited);
-	block_sigrtmin();
 
   // let scheduler know that the current user thread has requested to yield
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
   kinfo->sched_info.task = YIELD;
 
-	lock_pcbs();
-	kfc_pcb_t *current_pcb = pcbs[get_current_tid()];
-	assert(current_pcb->state == RUNNING);
-	current_pcb->state = READY;
-	unblock_sigrtmin();
+	lock_tcbs();
+	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+	assert(current_tcb->state == RUNNING);
+	current_tcb->state = READY;
 
   // save caller state and swap to scheduler
-  if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {
+  if (swapcontext(&current_tcb->ctx, get_sched_ctx())) {
     perror("swapcontext");
     abort();
   }
@@ -889,7 +835,6 @@ int
 kfc_sem_init(kfc_sem_t *sem, int value)
 {
 	assert(inited);
-	block_sigrtmin();
 
   sem->counter = value;
   if ((errno = kthread_mutex_init(&sem->lock))) {
@@ -901,7 +846,6 @@ kfc_sem_init(kfc_sem_t *sem, int value)
 		return -1;
   }
   return 0;
-	unblock_sigrtmin();
 }
 
 /**
@@ -916,13 +860,6 @@ int
 kfc_sem_post(kfc_sem_t *sem)
 {
 	assert(inited);
-	block_sigrtmin();
-	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-	if (kinfo->preempted) {
-		DPRINTF("preempted is 1 in kthread %d\n", kthread_self());
-		kinfo->preempted = 0;
-		//kfc_yield();
-	}
 
   if (kthread_mutex_lock(&sem->lock)) {
     perror("kthread_mutex_lock");
@@ -932,27 +869,26 @@ kfc_sem_post(kfc_sem_t *sem)
   // increase counter
   sem->counter++;
 
-  // if a thread has been waiting to decrement counter, return it to the ready queue
+  // if a thread has been waiting to decrement counter,
+	// return it to the ready queue
   if (queue_size(&sem->queue) > 0) {
 
-    kfc_pcb_t *pcb = queue_dequeue(&sem->queue);
+    kfc_tcb_t *tcb = queue_dequeue(&sem->queue);
 
-    lock_pcbs();
+    lock_tcbs();
 
-    assert(pcb);
-    assert(pcb->state == WAITING_SEM);
-    pcb->state = READY;
+    assert(tcb);
+    assert(tcb->state == WAITING_SEM);
+    tcb->state = READY;
     
-    unlock_pcbs();
+    unlock_tcbs();
     
-    ready_enqueue(pcb);
+    ready_enqueue(tcb);
 	}
 	if (kthread_mutex_unlock(&sem->lock)) {
 		perror("kthread_mutex_unlock");
 		return -1;
 	}
-	unblock_sigrtmin();
-
 	return 0;
 }
 
@@ -969,31 +905,29 @@ int
 kfc_sem_wait(kfc_sem_t *sem)
 {
 	assert(inited);
-	block_sigrtmin();
-
 
   if (kthread_mutex_lock(&sem->lock)) {
     perror("kthread_mutex_lock");
 		return -1;
   }
 
-	kfc_pcb_t *current_pcb = pcbs[get_current_tid()];
+	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
 
   assert(sem->counter >= 0);
 
-  // block if the counter is not above 0 (loop for when this context is resumed)
+  // block if the counter is not above 0 (loop to recheck condition
+	// once this context is resumed)
   while (sem->counter == 0) {
 		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		kinfo->sched_info.task = SEM_WAIT;
 		kinfo->sched_info.lock = &sem->lock;
 		kinfo->sched_info.queue = &sem->queue;
 
-		lock_pcbs();
-		current_pcb->state = WAITING_SEM;
-		unblock_sigrtmin();
+		lock_tcbs();
+		current_tcb->state = WAITING_SEM;
 
     // block by saving caller state and swapping to scheduler
-    if (swapcontext(&current_pcb->ctx, get_sched_ctx())) {
+    if (swapcontext(&current_tcb->ctx, get_sched_ctx())) {
       perror("swapcontext");
 			abort();
     }
@@ -1003,7 +937,6 @@ kfc_sem_wait(kfc_sem_t *sem)
       perror("kthread_mutex_lock");
 			return -1;
     }
-		block_sigrtmin();
   }
 
   // decrement the counter once it is above 0
@@ -1014,7 +947,6 @@ kfc_sem_wait(kfc_sem_t *sem)
     perror("kthread_mutex_unlock");
 		return -1;
   }
-	unblock_sigrtmin();
 
 	return 0;
 }
@@ -1029,10 +961,8 @@ void
 kfc_sem_destroy(kfc_sem_t *sem)
 {
 	assert(inited);
-	block_sigrtmin();
   queue_destroy(&sem->queue);
   if (kthread_mutex_destroy(&sem->lock)) {
     perror("kthread_mutex_destroy\n");
   }
-	unblock_sigrtmin();
 }
