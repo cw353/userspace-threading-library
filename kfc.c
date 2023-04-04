@@ -33,7 +33,7 @@ static kfc_tcb_t exitall; // to signal teardown
 
 
 // shared data that doesn't need to be synchronized
-static int inited = 0;
+static sig_atomic_t inited = 0;
 static int quantum;
 static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
@@ -52,6 +52,10 @@ get_kthread_info(kthread_t ktid)
   return kinfo;
 }
 
+tid_t get_current_tid() {
+	return get_kthread_info(kthread_self())->current_tid;
+}
+
 ucontext_t *
 get_sched_ctx()
 {
@@ -60,10 +64,23 @@ get_sched_ctx()
 }
 
 void sigrtmin_handler(int sig) {
-	assert(inited); // XXX ?
-	write(STDERR_FILENO, "caught SIGRTMIN\n", 17);
+	if (inited) {
+		write(STDERR_FILENO, "caught SIGRTMIN\n", 17);
+		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+		kinfo->preempted = 1;
+	}
+}
+
+/*
+ * Check if the current thread has been preempted and handle if so.
+ */
+void check_preempted() {
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-	kinfo->preempted = 1;
+	if (quantum && kinfo->preempted) {
+		DPRINTF("preemption!!!\n");
+		kinfo->preempted = 0;
+		kfc_yield();
+	}
 }
 
 void set_timer_interrupt(kthread_t kid) {
@@ -228,7 +245,7 @@ void schedule()
 {
   
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-	int current_tid = kfc_self();
+	int current_tid = get_current_tid();
 	kfc_tcb_t *current_tcb = current_tid > -1 ? tcbs[current_tid] : NULL;
 
 	assert(kthread_self() == kinfo->ktid);
@@ -321,6 +338,7 @@ void schedule()
   next_tcb->state = RUNNING;
 
   unlock_tcbs();
+
 	kinfo->preempted = 0;
 
   // schedule thread
@@ -520,6 +538,7 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
+	inited = 0;
 
 	// signal all kthreads that teardown has been called
   for (int i = 0; i < num_kthreads; i++) {
@@ -531,13 +550,12 @@ kfc_teardown(void)
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	kinfo->sched_info.task = TEARDOWN;
 	lock_tcbs();
-	if (swapcontext(&tcbs[kfc_self()]->ctx, get_sched_ctx())) {
+	if (swapcontext(&tcbs[get_current_tid()]->ctx, get_sched_ctx())) {
 		perror("swapcontext");
 		abort();
 	}
 
 	// resume teardown (on the main kthread)
-	assert(inited);
 	kthread_t self = kthread_self();
 	assert(self == kthread_info[MAIN_KTHREAD_INDEX]->ktid);
 
@@ -596,8 +614,6 @@ kfc_teardown(void)
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
-
-	inited = 0;
 }
 
 /**
@@ -606,7 +622,7 @@ kfc_teardown(void)
 void trampoline(void *(*start_func)(void *), void *arg)
 {
   lock_tcbs();
-  assert(tcbs[kfc_self()]->state == RUNNING);
+  assert(tcbs[get_current_tid()]->state == RUNNING);
   unlock_tcbs();
 
   // run start_func and pass return value to kfc_exit
@@ -636,6 +652,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		caddr_t stack_base, size_t stack_size)
 {
 	assert(inited);
+	check_preempted();
 
 	// create new context
   tid_t new_tid = get_next_tid(); 
@@ -700,11 +717,12 @@ void
 kfc_exit(void *ret)
 {
 	assert(inited);
+	check_preempted();
 
   // update thread state and save return value
   lock_tcbs();
 
-	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+	kfc_tcb_t *current_tcb = tcbs[get_current_tid()];
   current_tcb->retval = ret;
 	assert(current_tcb->state == RUNNING);
 	current_tcb->state = FINISHED;
@@ -737,8 +755,9 @@ int
 kfc_join(tid_t tid, void **pret)
 {
 	assert(inited);
+	check_preempted();
 
-  tid_t current_tid = kfc_self();
+  tid_t current_tid = get_current_tid();
   kfc_tcb_t *current_tcb = tcbs[current_tid];
   kfc_tcb_t *target_tcb = tcbs[tid]; 
 
@@ -793,7 +812,8 @@ tid_t
 kfc_self(void)
 {
 	assert(inited);
-  return get_kthread_info(kthread_self())->current_tid;
+	check_preempted();
+  return get_current_tid();
 }
 
 /**
@@ -812,7 +832,7 @@ kfc_yield(void)
   kinfo->sched_info.task = YIELD;
 
 	lock_tcbs();
-	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+	kfc_tcb_t *current_tcb = tcbs[get_current_tid()];
 	assert(current_tcb->state == RUNNING);
 	current_tcb->state = READY;
 
@@ -835,6 +855,7 @@ int
 kfc_sem_init(kfc_sem_t *sem, int value)
 {
 	assert(inited);
+	check_preempted();
 
   sem->counter = value;
   if ((errno = kthread_mutex_init(&sem->lock))) {
@@ -860,6 +881,7 @@ int
 kfc_sem_post(kfc_sem_t *sem)
 {
 	assert(inited);
+	check_preempted();
 
   if (kthread_mutex_lock(&sem->lock)) {
     perror("kthread_mutex_lock");
@@ -905,13 +927,14 @@ int
 kfc_sem_wait(kfc_sem_t *sem)
 {
 	assert(inited);
+	check_preempted();
 
   if (kthread_mutex_lock(&sem->lock)) {
     perror("kthread_mutex_lock");
 		return -1;
   }
 
-	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+	kfc_tcb_t *current_tcb = tcbs[get_current_tid()];
 
   assert(sem->counter >= 0);
 
@@ -961,6 +984,8 @@ void
 kfc_sem_destroy(kfc_sem_t *sem)
 {
 	assert(inited);
+	check_preempted();
+
   queue_destroy(&sem->queue);
   if (kthread_mutex_destroy(&sem->lock)) {
     perror("kthread_mutex_destroy\n");
