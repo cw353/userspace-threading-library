@@ -851,7 +851,6 @@ tid_t
 kfc_self(void)
 {
 	assert(inited);
-	check_preempted();
   return get_current_tid();
 }
 
