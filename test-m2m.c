@@ -50,7 +50,7 @@ main(void)
 	tid_t tid0, tid1;
 	void *dummy;
 
-	INIT(KTHREADS, 0);
+	INIT(KTHREADS, 100000);
 
 	tid0 = THREAD(thread0);
 	tid1 = THREAD(thread1);
