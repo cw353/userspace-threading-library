@@ -62,6 +62,38 @@ get_sched_ctx()
   return &kinfo->sched_info.sched_ctx;
 }
 
+void block_sigrtmin() {
+	sigset_t mask;
+	if (sigemptyset(&mask)) {
+		perror("sigemptyset");
+		abort();
+	}
+	if (sigaddset(&mask, SIGRTMIN)) {
+		perror("sigaddset");
+		abort();
+	}
+	if (sigprocmask(SIG_BLOCK, &mask, NULL)) {
+		perror("sigprocmask");
+		abort();
+	}
+}
+
+void unblock_sigrtmin() {
+	sigset_t mask;
+	if (sigemptyset(&mask)) {
+		perror("sigemptyset");
+		abort();
+	}
+	if (sigaddset(&mask, SIGRTMIN)) {
+		perror("sigaddset");
+		abort();
+	}
+	if (sigprocmask(SIG_UNBLOCK, &mask, NULL)) {
+		perror("sigprocmask");
+		abort();
+	}
+}
+
 void sigrtmin_handler(int sig) {
 	if (inited && quantum) {
 		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
@@ -75,7 +107,7 @@ void sigrtmin_handler(int sig) {
 void check_preempted() {
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	if (quantum && kinfo->preempted) {
-		DPRINTF("preemption!!!\n");
+		DPRINTF("kthread %d has been preempted\n", kthread_self());
 		kinfo->preempted = 0;
 		kfc_yield();
 	}
@@ -318,6 +350,7 @@ void schedule()
 			schedule();
 		} else {
 			// otherwise, exit
+			if (quantum) block_sigrtmin();
 			if (kthread_sem_post(&exitall_sem)) {
 				perror("kthread_sem_post");
 				abort();
@@ -537,7 +570,15 @@ kfc_teardown(void)
 {
 	assert(inited);
 
-	quantum = 0; // disable preemption if enabled
+	// if preemption is enabled, delete timers
+	if (quantum) {
+		block_sigrtmin();
+		for (int i = 0; i < num_kthreads; i++) {
+			if (timer_delete(kthread_info[i]->timer_id)) {
+				perror("timer_delete");
+			}
+		}
+	}
 
 	// signal all kthreads that teardown has been called
   for (int i = 0; i < num_kthreads; i++) {
@@ -592,11 +633,6 @@ kfc_teardown(void)
 
 	// free kthread_info
 	for (int i = 0; i < num_kthreads; i++) {
-		if (quantum) {
-			if (timer_delete(kthread_info[i]->timer_id)) {
-				perror("timer_delete");
-			}
-		}
 		free(kthread_info[i]->sched_info.sched_ctx.uc_stack.ss_sp);
     free(kthread_info[i]);
   }
@@ -613,6 +649,8 @@ kfc_teardown(void)
 
   // free main thread
   destroy_thread(KFC_TID_MAIN);
+
+	if (quantum) unblock_sigrtmin();
 
 	inited = 0;
 }
