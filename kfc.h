@@ -5,8 +5,8 @@
 #include <sys/types.h>
 
 #include "kthread.h"
-#include "ucontext.h"
 #include "queue.h"
+#include "ucontext.h"
 
 #define DPRINTF(...) do { fprintf(stderr, __VA_ARGS__); } while (0)
 

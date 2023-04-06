@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <errno.h>
 
 #define _GNU_SOURCE
@@ -191,4 +192,8 @@ int kthread_sem_wait(kthread_sem_t *sem) {
 
 int kthread_sem_destroy(kthread_sem_t *sem) {
 	return sem_destroy(sem);
+}
+
+int kthread_sigmask(int how, const sigset_t *set, sigset_t *oldset) {
+	return pthread_sigmask(how, set, oldset);
 }

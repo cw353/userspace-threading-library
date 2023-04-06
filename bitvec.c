@@ -3,9 +3,9 @@
  * Reference: CSCI 245 Project 5
  */
 
-#include <stdlib.h>
-#include <stdio.h>
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "bitvec.h"
 

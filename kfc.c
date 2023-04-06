@@ -1,13 +1,13 @@
 #include <assert.h>
-#include <sys/types.h>
-#include <stdlib.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include "kfc.h"
+#include "bitvec.h"
 #include "kthread.h"
 #include "queue.h"
-#include "bitvec.h"
 #include "ucontext.h"
 #include "valgrind.h"
 
@@ -63,8 +63,8 @@ void
 block_sigrtmin()
 {
 	if (quantum) {
-		if (pthread_sigmask(SIG_BLOCK, &sigrtmin_mask, NULL)) {
-			perror("pthread_sigmask");
+		if (kthread_sigmask(SIG_BLOCK, &sigrtmin_mask, NULL)) {
+			perror("kthread_sigmask");
 			abort();
 		}
 	}
@@ -74,8 +74,8 @@ void
 unblock_sigrtmin()
 {
 	if (quantum) {
-		if (pthread_sigmask(SIG_UNBLOCK, &sigrtmin_mask, NULL)) {
-			perror("pthread_sigmask");
+		if (kthread_sigmask(SIG_UNBLOCK, &sigrtmin_mask, NULL)) {
+			perror("kthread_sigmask");
 			abort();
 		}
 	}

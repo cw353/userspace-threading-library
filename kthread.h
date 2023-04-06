@@ -5,6 +5,7 @@
 
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 
 typedef pid_t kthread_t;
 typedef pthread_mutex_t kthread_mutex_t;
@@ -31,5 +32,7 @@ int kthread_sem_init(kthread_sem_t *sem, int value);
 int kthread_sem_post(kthread_sem_t *sem);
 int kthread_sem_wait(kthread_sem_t *sem);
 int kthread_sem_destroy(kthread_sem_t *sem);
+
+int kthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 
 #endif
