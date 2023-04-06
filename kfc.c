@@ -149,6 +149,8 @@ kthread_main(void *arg)
 		abort();
 	}
 
+	block_sigrtmin();
+
 	assert(inited);
 	if (quantum) {
 		set_timer_interrupt(kthread_self());
@@ -324,6 +326,8 @@ void
 schedule()
 {
   
+	block_sigrtmin();
+
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	int current_tid = kfc_self();
 	kfc_tcb_t *current_tcb = current_tid >= 0 ? tcbs[current_tid] : NULL;
@@ -400,7 +404,6 @@ schedule()
 			schedule();
 		} else {
 			// otherwise, exit
-			if (quantum) block_sigrtmin();
 			if (kthread_sem_post(&exitall_sem)) {
 				perror("kthread_sem_post");
 				abort();
@@ -421,6 +424,7 @@ schedule()
   unlock_tcbs();
 
 	kinfo->preempted = 0;
+	unblock_sigrtmin();
 
   // schedule thread
   if (setcontext(&next_tcb->ctx)) {
@@ -446,7 +450,6 @@ kfc_init(int kthreads, int quantum_us)
 
   num_kthreads = kthreads;
 	quantum = quantum_us;
-	//quantum = 100000; // TODO: remove when finished testing preemption
 	block_sigrtmin();
 
 	if (sigemptyset(&sigrtmin_mask)) {
