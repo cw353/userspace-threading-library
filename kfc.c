@@ -37,6 +37,7 @@ static sig_atomic_t quantum;
 static kfc_kinfo_t **kthread_info;
 static size_t num_kthreads;
 static unsigned int MAIN_KTHREAD_INDEX = 0;
+static sigset_t sigrtmin_mask;
 
 kfc_kinfo_t *
 get_kthread_info(kthread_t ktid)
@@ -61,36 +62,22 @@ get_sched_ctx()
 void
 block_sigrtmin()
 {
-	sigset_t mask;
-	if (sigemptyset(&mask)) {
-		perror("sigemptyset");
-		abort();
-	}
-	if (sigaddset(&mask, SIGRTMIN)) {
-		perror("sigaddset");
-		abort();
-	}
-	if (sigprocmask(SIG_BLOCK, &mask, NULL)) {
-		perror("sigprocmask");
-		abort();
+	if (quantum) {
+		if (pthread_sigmask(SIG_BLOCK, &sigrtmin_mask, NULL)) {
+			perror("pthread_sigmask");
+			abort();
+		}
 	}
 }
 
 void
 unblock_sigrtmin()
 {
-	sigset_t mask;
-	if (sigemptyset(&mask)) {
-		perror("sigemptyset");
-		abort();
-	}
-	if (sigaddset(&mask, SIGRTMIN)) {
-		perror("sigaddset");
-		abort();
-	}
-	if (sigprocmask(SIG_UNBLOCK, &mask, NULL)) {
-		perror("sigprocmask");
-		abort();
+	if (quantum) {
+		if (pthread_sigmask(SIG_UNBLOCK, &sigrtmin_mask, NULL)) {
+			perror("pthread_sigmask");
+			abort();
+		}
 	}
 }
 
@@ -459,7 +446,17 @@ kfc_init(int kthreads, int quantum_us)
 
   num_kthreads = kthreads;
 	quantum = quantum_us;
-	//quantum = 10000; // TODO: remove when finished testing preemption
+	quantum = 100000; // TODO: remove when finished testing preemption
+
+	if (sigemptyset(&sigrtmin_mask)) {
+		perror("sigemptyset");
+		abort();
+	}
+	if (sigaddset(&sigrtmin_mask, SIGRTMIN)) {
+		perror("sigaddset");
+		abort();
+	}
+
   if (kthread_sem_init(&inited_sem, 0)) {
     perror("kthread_sem_init");
     abort();
