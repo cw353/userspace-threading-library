@@ -58,7 +58,9 @@ get_sched_ctx()
   return &kinfo->sched_info.sched_ctx;
 }
 
-void block_sigrtmin() {
+void
+block_sigrtmin()
+{
 	sigset_t mask;
 	if (sigemptyset(&mask)) {
 		perror("sigemptyset");
@@ -74,7 +76,9 @@ void block_sigrtmin() {
 	}
 }
 
-void unblock_sigrtmin() {
+void
+unblock_sigrtmin()
+{
 	sigset_t mask;
 	if (sigemptyset(&mask)) {
 		perror("sigemptyset");
@@ -90,7 +94,9 @@ void unblock_sigrtmin() {
 	}
 }
 
-void sigrtmin_handler(int sig) {
+void
+sigrtmin_handler(int sig)
+{
 	if (inited && quantum) {
 		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		kinfo->preempted = 1;
@@ -100,7 +106,9 @@ void sigrtmin_handler(int sig) {
 /*
  * Check if the current thread has been preempted and handle if so.
  */
-void check_preempted() {
+void
+check_preempted()
+{
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	if (quantum && kinfo->preempted) {
 		DPRINTF("kthread %d has been preempted\n", kthread_self());
@@ -109,7 +117,9 @@ void check_preempted() {
 	}
 }
 
-void set_timer_interrupt(kthread_t kid) {
+void
+set_timer_interrupt(kthread_t kid)
+{
   kfc_kinfo_t *kinfo = get_kthread_info(kid);
 
 	struct sigevent sev;
@@ -163,7 +173,8 @@ kthread_main(void *arg)
   return NULL;
 }
 
-int get_next_tid()
+int
+get_next_tid()
 {
   int ret;
 
@@ -187,7 +198,8 @@ int get_next_tid()
   return ret;
 }
 
-void lock_tcbs()
+void
+lock_tcbs()
 {
 	if (kthread_mutex_lock(&tcbs_lock)) {
     perror("tcbs_lock");
@@ -195,7 +207,8 @@ void lock_tcbs()
   }
 }
 
-void unlock_tcbs()
+void
+unlock_tcbs()
 {
   if (kthread_mutex_unlock(&tcbs_lock)) {
     perror("tcbs_unlock");
@@ -203,7 +216,8 @@ void unlock_tcbs()
   }
 }
 
-void reclaim_tid(tid_t tid)
+void
+reclaim_tid(tid_t tid)
 {
   if (kthread_mutex_lock(&bitvec_lock)) {
     perror("kthread_mutex_lock");
@@ -263,11 +277,64 @@ ready_dequeue()
 }
 
 /**
+ * Allocate the stack for the provided ucontext_t.
+ * @param stack       A pointer to the thread's stack
+ * @param stack_base  Location of the thread's stack if already allocated, or
+ *                    NULL if requesting that the library allocate it
+ *                    dynamically
+ * @param stack_size  Size (in bytes) of the thread's stack, or 0 to use the
+ *                    default thread stack size KFC_DEF_STACK_SIZE
+ * POSTCONDITION: The stack has been allocated and registered with valgrind.
+ */
+int
+allocate_stack(stack_t *stack, caddr_t stack_base, size_t stack_size)
+{
+  stack->ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
+  stack->ss_sp = stack_base ? stack_base : malloc(stack->ss_size);
+  if (!(stack->ss_sp)) {
+    perror("malloc");
+		return -1;
+  }
+  stack->ss_flags = 0;
+  VALGRIND_STACK_REGISTER(stack->ss_sp, stack->ss_sp + stack->ss_size);
+	return 0;
+}
+
+/* 
+ * Destroy a tcb.
+ * Precondition: tcbs[tid] != NULL.
+ */
+void
+destroy_thread(tid_t tid)
+{
+  queue_destroy(&tcbs[tid]->join_queue);
+  if (tcbs[tid]->stack_allocated) {
+    free(tcbs[tid]->ctx.uc_stack.ss_sp);
+  }
+  free(tcbs[tid]);
+  tcbs[tid] = NULL;
+}
+
+/**
+ * Thread trampoline function.
+ */
+void
+trampoline(void *(*start_func)(void *), void *arg)
+{
+  lock_tcbs();
+  assert(tcbs[kfc_self()]->state == RUNNING);
+  unlock_tcbs();
+  // run start_func and pass return value to kfc_exit
+  kfc_exit(start_func(arg));
+}
+
+/**
  * Schedule the next thread.
  * Precondition: if sched_info.task != NONE, then this kernel thread
  * is already holding tcbs_lock.
  */
-void schedule()
+void
+schedule()
 {
   
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
@@ -373,29 +440,6 @@ void schedule()
     perror("setcontext");
     abort();
   }
-}
-
-/**
- * Allocate the stack for the provided ucontext_t.
- * @param stack       A pointer to the thread's stack
- * @param stack_base  Location of the thread's stack if already allocated, or
- *                    NULL if requesting that the library allocate it
- *                    dynamically
- * @param stack_size  Size (in bytes) of the thread's stack, or 0 to use the
- *                    default thread stack size KFC_DEF_STACK_SIZE
- * POSTCONDITION: The stack has been allocated and registered with valgrind.
- */
-int allocate_stack(stack_t *stack, caddr_t stack_base, size_t stack_size)
-{
-  stack->ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
-  stack->ss_sp = stack_base ? stack_base : malloc(stack->ss_size);
-  if (!(stack->ss_sp)) {
-    perror("malloc");
-		return -1;
-  }
-  stack->ss_flags = 0;
-  VALGRIND_STACK_REGISTER(stack->ss_sp, stack->ss_sp + stack->ss_size);
-	return 0;
 }
 
 /**
@@ -533,22 +577,6 @@ kfc_init(int kthreads, int quantum_us)
 		set_timer_interrupt(kthread_self());
 	}
 	return 0;
-
-}
-
-/* 
- * Destroy a tcb.
- * Precondition: tcbs[tid] != NULL.
- */
-void
-destroy_thread(tid_t tid)
-{
-  queue_destroy(&tcbs[tid]->join_queue);
-  if (tcbs[tid]->stack_allocated) {
-    free(tcbs[tid]->ctx.uc_stack.ss_sp);
-  }
-  free(tcbs[tid]);
-  tcbs[tid] = NULL;
 }
 
 /**
@@ -650,20 +678,6 @@ kfc_teardown(void)
 	if (quantum) unblock_sigrtmin();
 
 	inited = 0;
-}
-
-/**
- * Thread trampoline function.
- */
-void trampoline(void *(*start_func)(void *), void *arg)
-{
-  lock_tcbs();
-  assert(tcbs[kfc_self()]->state == RUNNING);
-  unlock_tcbs();
-
-  // run start_func and pass return value to kfc_exit
-  kfc_exit(start_func(arg));
-
 }
 
 /**
