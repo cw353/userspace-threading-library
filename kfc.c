@@ -135,7 +135,7 @@ set_timer_interrupt(kthread_t kid)
 	its.it_interval.tv_sec = its.it_value.tv_sec;
 	its.it_interval.tv_nsec = its.it_value.tv_nsec;
 
-	if (timer_settime(kinfo->timer_id, 0, &its, NULL) == -1) {
+	if (timer_settime(kinfo->timer_id, 0, &its, NULL) < 0) {
 		perror("timer_settime");
 		abort();
 	}
@@ -172,7 +172,7 @@ get_next_tid()
   int tid = bitvec_first_cleared_index(&bitvec);
   if (tid < 0) {
 		// no tid not in use found
-    ret = -1;
+    ret = 1;
   } else {
     // mark tid as in use
     bitvec_set(&bitvec, tid);
@@ -280,7 +280,7 @@ allocate_stack(stack_t *stack, caddr_t stack_base, size_t stack_size)
   stack->ss_sp = stack_base ? stack_base : malloc(stack->ss_size);
   if (!(stack->ss_sp)) {
     perror("malloc");
-		return -1;
+		return 1;
   }
   stack->ss_flags = 0;
   VALGRIND_STACK_REGISTER(stack->ss_sp, stack->ss_sp + stack->ss_size);
@@ -326,7 +326,7 @@ schedule()
   
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	int current_tid = kfc_self();
-	kfc_tcb_t *current_tcb = current_tid > -1 ? tcbs[current_tid] : NULL;
+	kfc_tcb_t *current_tcb = current_tid >= 0 ? tcbs[current_tid] : NULL;
 
 	assert(kthread_self() == kinfo->ktid);
 
@@ -446,7 +446,8 @@ kfc_init(int kthreads, int quantum_us)
 
   num_kthreads = kthreads;
 	quantum = quantum_us;
-	quantum = 100000; // TODO: remove when finished testing preemption
+	//quantum = 100000; // TODO: remove when finished testing preemption
+	block_sigrtmin();
 
 	if (sigemptyset(&sigrtmin_mask)) {
 		perror("sigemptyset");
@@ -573,6 +574,8 @@ kfc_init(int kthreads, int quantum_us)
 	if (quantum) {
 		set_timer_interrupt(kthread_self());
 	}
+
+	unblock_sigrtmin();
 	return 0;
 }
 
@@ -591,10 +594,10 @@ void
 kfc_teardown(void)
 {
 	assert(inited);
+	block_sigrtmin();
 
 	// if preemption is enabled, delete timers
 	if (quantum) {
-		block_sigrtmin();
 		for (int i = 0; i < num_kthreads; i++) {
 			if (timer_delete(kthread_info[i]->timer_id)) {
 				perror("timer_delete");
@@ -672,7 +675,7 @@ kfc_teardown(void)
   // free main thread
   destroy_thread(KFC_TID_MAIN);
 
-	if (quantum) unblock_sigrtmin();
+	unblock_sigrtmin();
 
 	inited = 0;
 }
@@ -699,14 +702,18 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		caddr_t stack_base, size_t stack_size)
 {
 	assert(inited);
+	block_sigrtmin();
 	check_preempted();
+
+	int ret = 0;
 
 	// create new context
   tid_t new_tid = get_next_tid(); 
 	if (new_tid < 0) {
 		errno = EAGAIN;
 		perror("get_next_tid");
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
 	}
   *ptid = new_tid;
 
@@ -715,7 +722,8 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   tcbs[new_tid] = malloc(sizeof(kfc_tcb_t));
 	if (!tcbs[new_tid]) {
 		perror("malloc");
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
 	}
   tcbs[new_tid]->tid = new_tid;
   tcbs[new_tid]->state = READY;
@@ -731,7 +739,8 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
   // allocate stack for new context
   if (allocate_stack(&tcbs[new_tid]->ctx.uc_stack, stack_base, stack_size)) {
 		free(tcbs[new_tid]);
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
 	}
   tcbs[new_tid]->stack_allocated = stack_base ? 0 : 1;
 
@@ -751,7 +760,10 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 
   unlock_tcbs();
 
-  return 0;
+unblock_sigrtmin:
+	unblock_sigrtmin();
+
+  return ret;
 }
 
 /**
@@ -764,6 +776,7 @@ void
 kfc_exit(void *ret)
 {
 	assert(inited);
+	block_sigrtmin();
 	check_preempted();
 
   // update thread state and save return value
@@ -802,6 +815,7 @@ int
 kfc_join(tid_t tid, void **pret)
 {
 	assert(inited);
+	block_sigrtmin();
 	check_preempted();
 
   tid_t current_tid = kfc_self();
@@ -829,7 +843,8 @@ kfc_join(tid_t tid, void **pret)
       abort();
     }
 
-		// reaquire readlock
+		// reaquire readlock and re-block sigrtmin
+		block_sigrtmin();
 		lock_tcbs();
   }
 
@@ -846,6 +861,7 @@ kfc_join(tid_t tid, void **pret)
   // Clean up target thread's resources
   reclaim_tid(tid);
   destroy_thread(tid);
+	unblock_sigrtmin();
 
 	return 0;
 }
@@ -872,6 +888,7 @@ void
 kfc_yield(void)
 {
 	assert(inited);
+	block_sigrtmin();
 
   // let scheduler know that the current user thread has requested to yield
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
@@ -901,18 +918,25 @@ int
 kfc_sem_init(kfc_sem_t *sem, int value)
 {
 	assert(inited);
+	block_sigrtmin();
 	check_preempted();
 
   sem->counter = value;
+	int ret = 0;
   if ((errno = kthread_mutex_init(&sem->lock))) {
     perror("kthread_mutex_init");
-		return -1;
+		ret =  1;
+		goto unblock_sigrtmin;
   }
-  if (queue_init(&sem->queue)) {
+	if (queue_init(&sem->queue)) {
     perror("queue_init");
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
   }
-  return 0;
+
+unblock_sigrtmin:
+	unblock_sigrtmin();
+	return ret;
 }
 
 /**
@@ -927,11 +951,15 @@ int
 kfc_sem_post(kfc_sem_t *sem)
 {
 	assert(inited);
+	block_sigrtmin();
 	check_preempted();
+
+	int ret = 0;
 
   if (kthread_mutex_lock(&sem->lock)) {
     perror("kthread_mutex_lock");
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
   }
 
   // increase counter
@@ -955,9 +983,13 @@ kfc_sem_post(kfc_sem_t *sem)
 	}
 	if (kthread_mutex_unlock(&sem->lock)) {
 		perror("kthread_mutex_unlock");
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
 	}
-	return 0;
+
+unblock_sigrtmin:
+	unblock_sigrtmin();
+	return ret;
 }
 
 /**
@@ -973,11 +1005,15 @@ int
 kfc_sem_wait(kfc_sem_t *sem)
 {
 	assert(inited);
+	block_sigrtmin();
 	check_preempted();
+
+	int ret = 0;
 
   if (kthread_mutex_lock(&sem->lock)) {
     perror("kthread_mutex_lock");
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
   }
 
 	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
@@ -1001,10 +1037,12 @@ kfc_sem_wait(kfc_sem_t *sem)
 			abort();
     }
 
-    // reacquire lock after this context is resumed
+    // reacquire lock and re-block sigrtmin after this context is resumed
+		block_sigrtmin();
     if (kthread_mutex_lock(&sem->lock)) {
       perror("kthread_mutex_lock");
-			return -1;
+			ret = 1;
+			goto unblock_sigrtmin;
     }
   }
 
@@ -1014,10 +1052,13 @@ kfc_sem_wait(kfc_sem_t *sem)
 
   if (kthread_mutex_unlock(&sem->lock)) {
     perror("kthread_mutex_unlock");
-		return -1;
+		ret = 1;
+		goto unblock_sigrtmin;
   }
 
-	return 0;
+unblock_sigrtmin:
+	unblock_sigrtmin();
+	return ret;
 }
 
 /**
@@ -1031,9 +1072,11 @@ kfc_sem_destroy(kfc_sem_t *sem)
 {
 	assert(inited);
 	check_preempted();
+	block_sigrtmin();
 
   queue_destroy(&sem->queue);
   if (kthread_mutex_destroy(&sem->lock)) {
     perror("kthread_mutex_destroy\n");
   }
+	unblock_sigrtmin();
 }
