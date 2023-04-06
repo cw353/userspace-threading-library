@@ -8,6 +8,7 @@ CFLAGS += -Wno-error=unused-variable
 # freed by functions not yet implemented.
 TESTS_LENIENT = create self fcfs yield yield2 exit
 TESTS_NOVG = m2m
+TESTS_PREEMPT = create self join sem sem2 sem3 m2m m2m-pc
 
 # List of all tests
 TESTS = $(TESTS_LENIENT) join sem sem2 sem3 $(TESTS_NOVG) m2m-pc
@@ -16,6 +17,7 @@ TESTS = $(TESTS_LENIENT) join sem sem2 sem3 $(TESTS_NOVG) m2m-pc
 RUN_TESTS = $(addprefix run-test-,$(TESTS))
 RUN_TESTS_LENIENT = $(addprefix run-test-,$(TESTS_LENIENT))
 RUN_TESTS_NOVG = $(addprefix run-test-,$(TESTS_NOVG))
+RUN_TESTS_PREEMPT = $(addprefix run-test-,$(TESTS_PREEMPT))
 
 # Build products
 BINS = $(addprefix test-,$(TESTS))
@@ -39,6 +41,12 @@ test: $(RUN_TESTS)
 
 vtest: test
 vtest: VALGRIND = valgrind --suppressions=$(VGSUPP) --error-exitcode=2 --errors-for-leak-kinds=all
+
+ptest: $(RUN_TESTS_PREEMPT)
+	@echo All succeeded
+
+pvtest: ptest
+pvtest: VALGRIND = valgrind --suppressions=$(VGSUPP) --error-exitcode=2 --errors-for-leak-kinds=all
 
 $(RUN_TESTS): run-test-%: test-%
 	$(VALGRIND) ./$^
