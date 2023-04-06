@@ -450,7 +450,6 @@ kfc_init(int kthreads, int quantum_us)
 
 	num_kthreads = kthreads;
 	quantum = quantum_us;
-	block_sigrtmin();
 
 	if (sigemptyset(&sigrtmin_mask)) {
 		perror("sigemptyset");
@@ -460,6 +459,8 @@ kfc_init(int kthreads, int quantum_us)
 		perror("sigaddset");
 		abort();
 	}
+
+	block_sigrtmin();
 
 	if (kthread_sem_init(&inited_sem, 0)) {
 		perror("kthread_sem_init");
