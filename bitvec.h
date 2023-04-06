@@ -5,9 +5,9 @@
 
 typedef struct _bitvec
 {
-  size_t nbits;
-  size_t nbytes;
-  unsigned char *vec;
+	size_t nbits;
+	size_t nbytes;
+	unsigned char *vec;
 } bitvec_t;
 
 int bitvec_init(bitvec_t *bv, size_t num_bytes);

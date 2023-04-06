@@ -22,57 +22,57 @@
 typedef unsigned int tid_t;
 
 typedef struct {
-  int counter;
-  queue_t queue;
-  kthread_mutex_t lock;
+	int counter;
+	queue_t queue;
+	kthread_mutex_t lock;
 	kthread_sem_t ksem;
 } kfc_sem_t;
 
 enum thread_state {
-  READY,
-  RUNNING,
-  WAITING_JOIN,
-  WAITING_SEM,
-  FINISHED,
+	READY,
+	RUNNING,
+	WAITING_JOIN,
+	WAITING_SEM,
+	FINISHED,
 };
 
 enum sched_task {
-  NONE,
-  YIELD,
+	NONE,
+	YIELD,
 	EXIT,
-  JOIN,
-  SEM_WAIT,
+	JOIN,
+	SEM_WAIT,
 	TEARDOWN,
 };
 
 typedef struct {
-  tid_t tid;
-  char stack_allocated; // if stack was allocated by kfc
-  enum thread_state state;
-  void *retval;
+	tid_t tid;
+	char stack_allocated; // if stack was allocated by kfc
+	enum thread_state state;
+	void *retval;
 	queue_t join_queue;
-  ucontext_t ctx;
+	ucontext_t ctx;
 } kfc_tcb_t;
 
 typedef struct {
-  enum sched_task task;
-  ucontext_t sched_ctx;
+	enum sched_task task;
+	ucontext_t sched_ctx;
 	kthread_mutex_t *lock;
 	queue_t *queue;
 } kfc_ksched_t;
 
 typedef struct {
-  int ktid;
-  int current_tid;
-  kfc_ksched_t sched_info;
+	int ktid;
+	int current_tid;
+	kfc_ksched_t sched_info;
 	timer_t timer_id;
 	sig_atomic_t preempted;
 } kfc_kinfo_t;
 
 struct ready_queue {
-  queue_t queue;
-  kthread_sem_t not_empty;
-  kthread_mutex_t lock;
+	queue_t queue;
+	kthread_sem_t not_empty;
+	kthread_mutex_t lock;
 };
 
 /**************************
