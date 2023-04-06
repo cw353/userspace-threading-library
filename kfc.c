@@ -51,10 +51,6 @@ get_kthread_info(kthread_t ktid)
   return kinfo;
 }
 
-tid_t get_current_tid() {
-	return get_kthread_info(kthread_self())->current_tid;
-}
-
 ucontext_t *
 get_sched_ctx()
 {
@@ -275,7 +271,7 @@ void schedule()
 {
   
   kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-	int current_tid = get_current_tid();
+	int current_tid = kfc_self();
 	kfc_tcb_t *current_tcb = current_tid > -1 ? tcbs[current_tid] : NULL;
 
 	assert(kthread_self() == kinfo->ktid);
@@ -419,6 +415,7 @@ kfc_init(int kthreads, int quantum_us)
 
   num_kthreads = kthreads;
 	quantum = quantum_us;
+	//quantum = 10000; // TODO: remove when finished testing preemption
   if (kthread_sem_init(&inited_sem, 0)) {
     perror("kthread_sem_init");
     abort();
@@ -590,7 +587,7 @@ kfc_teardown(void)
 	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	kinfo->sched_info.task = TEARDOWN;
 	lock_tcbs();
-	if (swapcontext(&tcbs[get_current_tid()]->ctx, get_sched_ctx())) {
+	if (swapcontext(&tcbs[kfc_self()]->ctx, get_sched_ctx())) {
 		perror("swapcontext");
 		abort();
 	}
@@ -661,7 +658,7 @@ kfc_teardown(void)
 void trampoline(void *(*start_func)(void *), void *arg)
 {
   lock_tcbs();
-  assert(tcbs[get_current_tid()]->state == RUNNING);
+  assert(tcbs[kfc_self()]->state == RUNNING);
   unlock_tcbs();
 
   // run start_func and pass return value to kfc_exit
@@ -761,7 +758,7 @@ kfc_exit(void *ret)
   // update thread state and save return value
   lock_tcbs();
 
-	kfc_tcb_t *current_tcb = tcbs[get_current_tid()];
+	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
   current_tcb->retval = ret;
 	assert(current_tcb->state == RUNNING);
 	current_tcb->state = FINISHED;
@@ -796,7 +793,7 @@ kfc_join(tid_t tid, void **pret)
 	assert(inited);
 	check_preempted();
 
-  tid_t current_tid = get_current_tid();
+  tid_t current_tid = kfc_self();
   kfc_tcb_t *current_tcb = tcbs[current_tid];
   kfc_tcb_t *target_tcb = tcbs[tid]; 
 
@@ -851,7 +848,7 @@ tid_t
 kfc_self(void)
 {
 	assert(inited);
-  return get_current_tid();
+	return get_kthread_info(kthread_self())->current_tid;
 }
 
 /**
@@ -870,7 +867,7 @@ kfc_yield(void)
   kinfo->sched_info.task = YIELD;
 
 	lock_tcbs();
-	kfc_tcb_t *current_tcb = tcbs[get_current_tid()];
+	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
 	assert(current_tcb->state == RUNNING);
 	current_tcb->state = READY;
 
@@ -972,7 +969,7 @@ kfc_sem_wait(kfc_sem_t *sem)
 		return -1;
   }
 
-	kfc_tcb_t *current_tcb = tcbs[get_current_tid()];
+	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
 
   assert(sem->counter >= 0);
 
