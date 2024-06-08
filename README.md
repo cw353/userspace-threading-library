@@ -1,6 +1,6 @@
 # Userspace Threading Library
 
-Implementation of a user-thread library called `uthread`. 
+Implementation of a userspace threading library called `uthread`. 
 This library provides the userspace portion of a many-to-one or
 many-to-many threading model, depending on the number of kernel threads
 requested at initialization. Scheduling can either be cooperative (FCFS)
