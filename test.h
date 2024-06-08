@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 
-#include "kfc.h"
+#include "uthread.h"
 
 static pthread_mutex_t _test_lock = PTHREAD_MUTEX_INITIALIZER;
 static int _test_counter = 0;
@@ -16,8 +16,8 @@ static int _test_nope = 0;
 static inline void
 INIT(int nthreads, int quantum_us)
 {
-	if (kfc_init(nthreads, quantum_us)) {
-		perror("kfc_init");
+	if (uthread_init(nthreads, quantum_us)) {
+		perror("uthread_init");
 		exit(1);
 	}
 }
@@ -56,7 +56,7 @@ ASSERT(int cond, char *text)
 static inline void
 VERIFY(int n)
 {
-	kfc_teardown();
+	uthread_teardown();
 
 	pthread_mutex_lock(&_test_lock);
 	int nope = _test_counter != n;
@@ -79,8 +79,8 @@ static inline tid_t
 THREAD_ARG_STACK(void *(*func)(void *), void *arg, void *stack, size_t stack_sz)
 {
 	tid_t tid;
-	if (kfc_create(&tid, func, arg, stack, stack_sz)) {
-		perror("kfc_create");
+	if (uthread_create(&tid, func, arg, stack, stack_sz)) {
+		perror("uthread_create");
 		exit(1);
 	}
 	return tid;

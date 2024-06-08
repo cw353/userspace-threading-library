@@ -2,7 +2,7 @@
 #include <time.h>
 
 #include "test.h"
-#include "kfc.h"
+#include "uthread.h"
 
 #define KTHREADS 4
 #define EACH_COUNT 1000000
@@ -55,8 +55,8 @@ main(void)
 	tid0 = THREAD(thread0);
 	tid1 = THREAD(thread1);
 
-	kfc_join(tid0, &dummy);
-	kfc_join(tid1, &dummy);
+	uthread_join(tid0, &dummy);
+	uthread_join(tid1, &dummy);
 
 	ASSERT(count < (EACH_COUNT * 2), "threads not running in parallel?");
 
@@ -65,8 +65,8 @@ main(void)
 	tid0 = THREAD(sleep0);
 	tid1 = THREAD(sleep1);
 
-	kfc_join(tid0, &dummy);
-	kfc_join(tid1, &dummy);
+	uthread_join(tid0, &dummy);
+	uthread_join(tid1, &dummy);
 	clock_gettime(CLOCK_REALTIME, &end);
 
 	if (end.tv_nsec < start.tv_nsec) {

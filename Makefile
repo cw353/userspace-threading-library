@@ -22,7 +22,7 @@ RUN_TESTS_PREEMPT = $(addprefix run-test-,$(TESTS_PREEMPT))
 # Build products
 BINS = $(addprefix test-,$(TESTS))
 OBJS = $(addsuffix .o,$(BINS))
-LIBS = queue.o bitvec.o kfc.o kthread.o
+LIBS = queue.o bitvec.o uthread.o kthread.o
 
 # For the vtest target
 VALGRIND =
@@ -58,7 +58,7 @@ $(RUN_TESTS_LENIENT): VGSUPP = valgrind.supp
 
 # Compile dependencies for libraries and binaries
 $(LIBS): %.o: %.h
-$(OBJS): test.h queue.h bitvec.h kfc.h kthread.h
+$(OBJS): test.h queue.h bitvec.h uthread.h kthread.h
 
 # Link each binary with all the libraries
 $(BINS): $(LIBS)

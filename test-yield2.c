@@ -3,13 +3,13 @@
 #include <unistd.h>
 
 #include "test.h"
-#include "kfc.h"
+#include "uthread.h"
 
 static void *
 thread2_main(void *arg)
 {
 	CHECKPOINT(5);
-	kfc_yield();
+	uthread_yield();
 
 	CHECKPOINT(8);
 	return NULL;
@@ -23,13 +23,13 @@ thread_main(void *arg)
 	THREAD(thread2_main);
 
 	CHECKPOINT(3);
-	kfc_yield();
+	uthread_yield();
 
 	CHECKPOINT(6);
-	kfc_yield();
+	uthread_yield();
 
 	CHECKPOINT(9);
-	kfc_yield();
+	uthread_yield();
 
 	return NULL;
 }
@@ -44,16 +44,16 @@ main(void)
 	THREAD(thread_main);
 
 	CHECKPOINT(1);
-	kfc_yield();
+	uthread_yield();
 
 	CHECKPOINT(4);
-	kfc_yield();
+	uthread_yield();
 
 	CHECKPOINT(7);
-	kfc_yield();
+	uthread_yield();
 
 	CHECKPOINT(10);
-	kfc_yield();
+	uthread_yield();
 
 	VERIFY(11);
 	return 0;

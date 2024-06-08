@@ -4,5 +4,5 @@
    match-leak-kinds: reachable
    fun:malloc
    ...
-   fun:kfc_create
+   fun:uthread_create
 }

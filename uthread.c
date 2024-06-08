@@ -4,7 +4,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include "kfc.h"
+#include "uthread.h"
 #include "bitvec.h"
 #include "kthread.h"
 #include "queue.h"
@@ -23,26 +23,26 @@ static struct ready_queue rqueue;
 static bitvec_t bitvec; // bit i is 1 if tid i is in use and 0 otherwise
 static kthread_mutex_t bitvec_lock;
 
-static kfc_tcb_t *tcbs[KFC_MAX_THREADS]; // user thread PCBs
+static uthread_tcb_t *tcbs[UTHREAD_MAX_THREADS]; // user thread PCBs
 static kthread_mutex_t tcbs_lock;
 
 static ucontext_t abort_ctx;
 
-static kfc_tcb_t exitall; // to signal teardown
+static uthread_tcb_t exitall; // to signal teardown
 
 
 // shared data that doesn't need to be synchronized
 static int inited = 0;
 static sig_atomic_t quantum;
-static kfc_kinfo_t **kthread_info;
+static uthread_kinfo_t **kthread_info;
 static size_t num_kthreads;
 static unsigned int MAIN_KTHREAD_INDEX = 0;
 static sigset_t sigrtmin_mask;
 
-kfc_kinfo_t *
+uthread_kinfo_t *
 get_kthread_info(kthread_t ktid)
 {
-	kfc_kinfo_t *kinfo = NULL;
+	uthread_kinfo_t *kinfo = NULL;
 	for (int i = 0; i < num_kthreads; i++) {
 		if (kthread_info[i]->ktid == ktid) {
 			kinfo = kthread_info[i];
@@ -55,7 +55,7 @@ get_kthread_info(kthread_t ktid)
 ucontext_t *
 get_sched_ctx()
 {
-	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	return &kinfo->sched_info.sched_ctx;
 }
 
@@ -85,7 +85,7 @@ void
 sigrtmin_handler(int sig)
 {
 	if (inited && quantum) {
-		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+		uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		kinfo->preempted = 1;
 	}
 }
@@ -96,18 +96,18 @@ sigrtmin_handler(int sig)
 void
 check_preempted()
 {
-	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	if (quantum && kinfo->preempted) {
 		DPRINTF("kthread %d has been preempted\n", kthread_self());
 		kinfo->preempted = 0;
-		kfc_yield();
+		uthread_yield();
 	}
 }
 
 void
 set_timer_interrupt(kthread_t kid)
 {
-	kfc_kinfo_t *kinfo = get_kthread_info(kid);
+	uthread_kinfo_t *kinfo = get_kthread_info(kid);
 
 	struct sigevent sev;
 	struct itimerspec its;
@@ -178,7 +178,7 @@ get_next_tid()
 	} else {
 		// mark tid as in use
 		bitvec_set(&bitvec, tid);
-		ret = tid + KFC_TID_MAIN;
+		ret = tid + UTHREAD_TID_MAIN;
 	}
 	if (kthread_mutex_unlock(&bitvec_lock)) {
 		perror("kthread_mutex_unlock");
@@ -212,7 +212,7 @@ reclaim_tid(tid_t tid)
 		perror("kthread_mutex_lock");
 		abort();
 	}
-	bitvec_clear(&bitvec, tid - KFC_TID_MAIN);
+	bitvec_clear(&bitvec, tid - UTHREAD_TID_MAIN);
 	if (kthread_mutex_unlock(&bitvec_lock)) {
 		perror("kthread_mutex_unlock");
 		abort();
@@ -220,7 +220,7 @@ reclaim_tid(tid_t tid)
 }
 
 void
-ready_enqueue(kfc_tcb_t *tcb)
+ready_enqueue(uthread_tcb_t *tcb)
 {
 	if (kthread_mutex_lock(&rqueue.lock)) {
 		perror("kthread_mutex_lock");
@@ -240,7 +240,7 @@ ready_enqueue(kfc_tcb_t *tcb)
 	}
 }
 
-kfc_tcb_t *
+uthread_tcb_t *
 ready_dequeue()
 {
 	if (kthread_sem_wait(&rqueue.not_empty)) {
@@ -254,7 +254,7 @@ ready_dequeue()
 	}
 
 	assert(queue_size(&rqueue.queue) > 0);
-	kfc_tcb_t *tcb = queue_dequeue(&rqueue.queue);
+	uthread_tcb_t *tcb = queue_dequeue(&rqueue.queue);
 	assert(tcb);
 
 	if (kthread_mutex_unlock(&rqueue.lock)) {
@@ -272,13 +272,13 @@ ready_dequeue()
  *                    NULL if requesting that the library allocate it
  *                    dynamically
  * @param stack_size  Size (in bytes) of the thread's stack, or 0 to use the
- *                    default thread stack size KFC_DEF_STACK_SIZE
+ *                    default thread stack size UTHREAD_DEF_STACK_SIZE
  * POSTCONDITION: The stack has been allocated and registered with valgrind.
  */
 int
 allocate_stack(stack_t *stack, caddr_t stack_base, size_t stack_size)
 {
-	stack->ss_size = stack_size ? stack_size : KFC_DEF_STACK_SIZE;
+	stack->ss_size = stack_size ? stack_size : UTHREAD_DEF_STACK_SIZE;
 	stack->ss_sp = stack_base ? stack_base : malloc(stack->ss_size);
 	if (!(stack->ss_sp)) {
 		perror("malloc");
@@ -311,10 +311,10 @@ void
 trampoline(void *(*start_func)(void *), void *arg)
 {
 	lock_tcbs();
-	assert(tcbs[kfc_self()]->state == RUNNING);
+	assert(tcbs[uthread_self()]->state == RUNNING);
 	unlock_tcbs();
-	// run start_func and pass return value to kfc_exit
-	kfc_exit(start_func(arg));
+	// run start_func and pass return value to uthread_exit
+	uthread_exit(start_func(arg));
 }
 
 /**
@@ -328,9 +328,9 @@ schedule()
 
 	block_sigrtmin();
 
-	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
-	int current_tid = kfc_self();
-	kfc_tcb_t *current_tcb = current_tid >= 0 ? tcbs[current_tid] : NULL;
+	uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	int current_tid = uthread_self();
+	uthread_tcb_t *current_tcb = current_tid >= 0 ? tcbs[current_tid] : NULL;
 
 	assert(kthread_self() == kinfo->ktid);
 
@@ -347,7 +347,7 @@ schedule()
 			// if another thread is waiting to join on this thread,
 			// return it to the ready queue
 			if (queue_size(&current_tcb->join_queue) > 0) {
-				kfc_tcb_t *join_tcb = queue_dequeue(&current_tcb->join_queue);
+				uthread_tcb_t *join_tcb = queue_dequeue(&current_tcb->join_queue);
 				assert(join_tcb && join_tcb->tid != current_tid && join_tcb->state == WAITING_JOIN);
 				join_tcb->state = READY;
 				ready_enqueue(join_tcb);
@@ -387,7 +387,7 @@ schedule()
 	kinfo->sched_info.queue = NULL;
 
 	// get next thread from ready queue (fcfs)
-	kfc_tcb_t *next_tcb = ready_dequeue();
+	uthread_tcb_t *next_tcb = ready_dequeue();
 
 	// handle teardown
 	if (next_tcb == &exitall) {
@@ -434,7 +434,7 @@ schedule()
 }
 
 /**
- * Initializes the kfc library.  Programs are required to call this function
+ * Initializes the uthread library.  Programs are required to call this function
  * before they may use anything else in the library's public interface.
  *
  * @param kthreads    Number of kernel threads (pthreads) to allocate
@@ -444,7 +444,7 @@ schedule()
  * @return 0 if successful, nonzero on failure
  */
 int
-kfc_init(int kthreads, int quantum_us)
+uthread_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
 
@@ -477,7 +477,7 @@ kfc_init(int kthreads, int quantum_us)
 		abort();
 	}
 
-	if (bitvec_init(&bitvec, KFC_MAX_THREADS)) {
+	if (bitvec_init(&bitvec, UTHREAD_MAX_THREADS)) {
 		perror ("bitvec_init");
 		abort();
 	}
@@ -499,10 +499,10 @@ kfc_init(int kthreads, int quantum_us)
 		abort();
 	}
 
-	// initialize kfc_ctx for main thread
+	// initialize uthread_ctx for main thread
 	int tid = get_next_tid();
 	assert(tid >= 0);
-	tcbs[tid] = malloc(sizeof(kfc_tcb_t));
+	tcbs[tid] = malloc(sizeof(uthread_tcb_t));
 	assert(tcbs[tid]);
 	tcbs[tid]->stack_allocated = 0;
 	tcbs[tid]->tid = tid;
@@ -527,16 +527,16 @@ kfc_init(int kthreads, int quantum_us)
 	}
 
 	// initialize kthread_info
-	kthread_info = malloc(num_kthreads * sizeof(kfc_kinfo_t *));
+	kthread_info = malloc(num_kthreads * sizeof(uthread_kinfo_t *));
 	assert(kthread_info);
 
 	// create kthread_info
 	for (int i = 0; i < num_kthreads; i++) {
-		kthread_info[i] = malloc(sizeof(kfc_kinfo_t));
+		kthread_info[i] = malloc(sizeof(uthread_kinfo_t));
 		assert(kthread_info[i]);
 		kthread_info[i]->ktid = i == 0 ? kthread_self() : -1;
 		// assign current user tid
-		kthread_info[i]->current_tid = i == 0 ? KFC_TID_MAIN : -1;
+		kthread_info[i]->current_tid = i == 0 ? UTHREAD_TID_MAIN : -1;
 		// initialize scheduler info
 		kthread_info[i]->sched_info.task = NONE;
 		kthread_info[i]->sched_info.lock = NULL;
@@ -584,7 +584,7 @@ kfc_init(int kthreads, int quantum_us)
 }
 
 /**
- * Cleans up any resources which were allocated by kfc_init.  You may assume
+ * Cleans up any resources which were allocated by uthread_init.  You may assume
  * that this function is called only from the main thread, that any other
  * threads have terminated and been joined, and that threading will not be
  * needed again.  (In other words, just clean up and don't worry about the
@@ -595,7 +595,7 @@ kfc_init(int kthreads, int quantum_us)
  * always encourage.
  */
 void
-kfc_teardown(void)
+uthread_teardown(void)
 {
 	assert(inited);
 	block_sigrtmin();
@@ -616,10 +616,10 @@ kfc_teardown(void)
 
 	// enqueue this context into the ready queue so that the rest of 
 	// this function will be executed by the main kthread
-	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	kinfo->sched_info.task = TEARDOWN;
 	lock_tcbs();
-	if (swapcontext(&tcbs[kfc_self()]->ctx, get_sched_ctx())) {
+	if (swapcontext(&tcbs[uthread_self()]->ctx, get_sched_ctx())) {
 		perror("swapcontext");
 		abort();
 	}
@@ -649,9 +649,9 @@ kfc_teardown(void)
 	// destroy other synchronization constructs
 	while (kthread_mutex_destroy(&tcbs_lock) == EBUSY);
 
-	// free zombie threads (excluding KFC_TID_MAIN, the context
+	// free zombie threads (excluding UTHREAD_TID_MAIN, the context
 	// in which this function is running)
-	for (int i = KFC_TID_MAIN + 1; i < KFC_MAX_THREADS; i++) {
+	for (int i = UTHREAD_TID_MAIN + 1; i < UTHREAD_MAX_THREADS; i++) {
 		if (tcbs[i]) {
 			destroy_thread(i);
 		}
@@ -677,7 +677,7 @@ kfc_teardown(void)
 	}
 
 	// free main thread
-	destroy_thread(KFC_TID_MAIN);
+	destroy_thread(UTHREAD_TID_MAIN);
 
 	unblock_sigrtmin();
 
@@ -697,12 +697,12 @@ kfc_teardown(void)
  *                    NULL if requesting that the library allocate it
  *                    dynamically
  * @param stack_size  Size (in bytes) of the thread's stack, or 0 to use the
- *                    default thread stack size KFC_DEF_STACK_SIZE
+ *                    default thread stack size UTHREAD_DEF_STACK_SIZE
  *
  * @return 0 if successful, nonzero on failure
  */
 int
-kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
+uthread_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		caddr_t stack_base, size_t stack_size)
 {
 	assert(inited);
@@ -723,7 +723,7 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 
 	lock_tcbs();
 
-	tcbs[new_tid] = malloc(sizeof(kfc_tcb_t));
+	tcbs[new_tid] = malloc(sizeof(uthread_tcb_t));
 	if (!tcbs[new_tid]) {
 		perror("malloc");
 		ret = 1;
@@ -777,7 +777,7 @@ unblock_sigrtmin:
  * @param ret  Return value from the thread
  */
 void
-kfc_exit(void *ret)
+uthread_exit(void *ret)
 {
 	assert(inited);
 	block_sigrtmin();
@@ -786,13 +786,13 @@ kfc_exit(void *ret)
 	// update thread state and save return value
 	lock_tcbs();
 
-	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+	uthread_tcb_t *current_tcb = tcbs[uthread_self()];
 	current_tcb->retval = ret;
 	assert(current_tcb->state == RUNNING);
 	current_tcb->state = FINISHED;
 
 	// let scheduler know that the current user thread has requested to exit
-	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	kinfo->sched_info.task = EXIT;
 
 	// ask scheduler to schedule next thread
@@ -810,21 +810,21 @@ kfc_exit(void *ret)
  * already been joined, results in undefined behavior.
  *
  * @param pret[out]  Pointer to a void * in which the thread's return value from
- *                   kfc_exit should be stored, or NULL if the caller does not
+ *                   uthread_exit should be stored, or NULL if the caller does not
  *                   care.
  *
  * @return 0 if successful, nonzero on failure
  */
 int
-kfc_join(tid_t tid, void **pret)
+uthread_join(tid_t tid, void **pret)
 {
 	assert(inited);
 	block_sigrtmin();
 	check_preempted();
 
-	tid_t current_tid = kfc_self();
-	kfc_tcb_t *current_tcb = tcbs[current_tid];
-	kfc_tcb_t *target_tcb = tcbs[tid]; 
+	tid_t current_tid = uthread_self();
+	uthread_tcb_t *current_tcb = tcbs[current_tid];
+	uthread_tcb_t *target_tcb = tcbs[tid]; 
 
 	lock_tcbs();
 
@@ -834,7 +834,7 @@ kfc_join(tid_t tid, void **pret)
 		assert(queue_size(&current_tcb->join_queue) == 0);
 
 		// let scheduler know that the current user thread has requested to join
-		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+		uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 
 		kinfo->sched_info.task = JOIN;
 		kinfo->sched_info.queue = &target_tcb->join_queue;
@@ -876,7 +876,7 @@ kfc_join(tid_t tid, void **pret)
  * @return Thread ID of the currently executing thread
  */
 tid_t
-kfc_self(void)
+uthread_self(void)
 {
 	assert(inited);
 	return get_kthread_info(kthread_self())->current_tid;
@@ -889,17 +889,17 @@ kfc_self(void)
  * algorithm.
  */
 void
-kfc_yield(void)
+uthread_yield(void)
 {
 	assert(inited);
 	block_sigrtmin();
 
 	// let scheduler know that the current user thread has requested to yield
-	kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+	uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 	kinfo->sched_info.task = YIELD;
 
 	lock_tcbs();
-	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+	uthread_tcb_t *current_tcb = tcbs[uthread_self()];
 	assert(current_tcb->state == RUNNING);
 	current_tcb->state = READY;
 
@@ -919,7 +919,7 @@ kfc_yield(void)
  * @return 0 if successful, nonzero on failure
  */
 int
-kfc_sem_init(kfc_sem_t *sem, int value)
+uthread_sem_init(uthread_sem_t *sem, int value)
 {
 	assert(inited);
 	block_sigrtmin();
@@ -952,7 +952,7 @@ unblock_sigrtmin:
  * @return 0 if successful, nonzero on failure
  */
 int
-kfc_sem_post(kfc_sem_t *sem)
+uthread_sem_post(uthread_sem_t *sem)
 {
 	assert(inited);
 	block_sigrtmin();
@@ -973,7 +973,7 @@ kfc_sem_post(kfc_sem_t *sem)
 	// return it to the ready queue
 	if (queue_size(&sem->queue) > 0) {
 
-		kfc_tcb_t *tcb = queue_dequeue(&sem->queue);
+		uthread_tcb_t *tcb = queue_dequeue(&sem->queue);
 
 		lock_tcbs();
 
@@ -1006,7 +1006,7 @@ unblock_sigrtmin:
  * @return 0 if successful, nonzero on failure
  */
 int
-kfc_sem_wait(kfc_sem_t *sem)
+uthread_sem_wait(uthread_sem_t *sem)
 {
 	assert(inited);
 	block_sigrtmin();
@@ -1020,14 +1020,14 @@ kfc_sem_wait(kfc_sem_t *sem)
 		goto unblock_sigrtmin;
 	}
 
-	kfc_tcb_t *current_tcb = tcbs[kfc_self()];
+	uthread_tcb_t *current_tcb = tcbs[uthread_self()];
 
 	assert(sem->counter >= 0);
 
 	// block if the counter is not above 0 (loop to recheck condition
 	// once this context is resumed)
 	while (sem->counter == 0) {
-		kfc_kinfo_t *kinfo = get_kthread_info(kthread_self());
+		uthread_kinfo_t *kinfo = get_kthread_info(kthread_self());
 		kinfo->sched_info.task = SEM_WAIT;
 		kinfo->sched_info.lock = &sem->lock;
 		kinfo->sched_info.queue = &sem->queue;
@@ -1072,7 +1072,7 @@ unblock_sigrtmin:
  * @param sem  Pointer to the semaphore to be destroyed
  */
 void
-kfc_sem_destroy(kfc_sem_t *sem)
+uthread_sem_destroy(uthread_sem_t *sem)
 {
 	assert(inited);
 	check_preempted();

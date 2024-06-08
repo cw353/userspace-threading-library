@@ -4,7 +4,7 @@
 
 #include "valgrind.h"
 #include "test.h"
-#include "kfc.h"
+#include "uthread.h"
 
 #define TEST_STACK_SZ 16384
 
@@ -38,7 +38,7 @@ thread_main(void *arg)
 
 	THREAD_ARG_STACK(subthread_main, (void *) 73, stack, TEST_STACK_SZ);
 	if (parent_first)
-		kfc_yield();
+		uthread_yield();
 
 	ASSERT(x == 42, "argument 42 was changed");
 
@@ -58,11 +58,11 @@ main(void)
 	THREAD_ARG(thread_main, (void *) 42);
 	if (parent_first < 0) {
 		parent_first = 1;
-		kfc_yield();
+		uthread_yield();
 	}
 
 	// Preserve correct behavior once thread switching is implemented
-	kfc_yield();
+	uthread_yield();
 
 	VERIFY(5);
 }
